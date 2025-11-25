@@ -1,0 +1,9 @@
+train_val_division = 0.80
+seed = 40
+EPOCHS = 2000
+scenario = 'mobile'
+N_PERIODS = 16
+batches_per_epoch_train = 256
+batches_per_epoch_val = 16
+samples_per_batch_train = 512
+samples_per_batch_val = 512
