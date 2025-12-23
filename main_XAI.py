@@ -13,16 +13,16 @@ import matplotlib.pyplot as plt
 import math
 import seaborn as sns
 from torch import nn
+import h5py
+
+
 
 from data.dataset import KeystrokeDataModule
 from utils.tools import setup_logger
-from models.Litmodel import KeystrokeLitModel
-from utils.callbacks import ValidationSilentProgressBar, PeriodicLRFinder
-from models.CNN import LearnPeriodsKeyEmb, norm_embeddings
+from utils.visualization import visualize_keystrokes
 from models.LTE import  LTEOrig, MultiplyFreqs, SinCos, ScaledSigmoid
-from utils.tools import export_to_onnx
 import conf
-import h5py
+
 
 logger = setup_logger("main")
 
@@ -36,7 +36,6 @@ def run_experiment(file_path: str):
     FULL_NAME = f'{conf.epochs}_{conf.scenario}'
     init_launch()
     logger.info("Data Loading...")
-
     data = np.load(file_path, allow_pickle=True).item()
 
     dm = KeystrokeDataModule(
@@ -52,59 +51,38 @@ def run_experiment(file_path: str):
         )
 
     dm.setup(None)
-    use_projector = False
-    nn_model = LearnPeriodsKeyEmb(periods_dict=dm.init_periods, use_projector=use_projector)
-   # -----------------------------
-    # Logging & Callbacks
-    # -----------------------------
-    tags = [
-        f"scenario_{conf.scenario}",
-        f"embedding_{conf.embedding_size}",
-        f"seqlen_{conf.sequence_length}",
-        f"epochs_{conf.epochs}",
-        f"trigperiods_{conf.N_PERIODS}",
-        f"head_{use_projector}"
-    ]
-    version = datetime.now().strftime("%Y%m%d_%H%M")
-    wandb_logger = WandbLogger(project=conf.project, name=FULL_NAME, version=version,
-                               log_model=True, tags=tags)
 
-    checkpoint_cb = ModelCheckpoint(
-        monitor="val/eer",
-        mode="min",
-        filename= f'{conf.scenario}' + "-{epoch:02d}-{val/eer:.2f}",
-        save_top_k=1,
-        save_last=True,
-        auto_insert_metric_name=False
-    )
-
-    lr_monitor = LearningRateMonitor(logging_interval=None)
-    validation_silent_bar = ValidationSilentProgressBar()
-
-    accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Device: {accelerator}")
-
-    trainer = pl.Trainer(
-        max_epochs=conf.epochs,
-        logger=wandb_logger,
-        callbacks=[checkpoint_cb, lr_monitor, validation_silent_bar],
-        precision="bf16-mixed",
-        gradient_clip_val=1.0,
-        accelerator=accelerator,
-        devices=1,
-        deterministic=True,
-        log_every_n_steps=100,
-        num_sanity_val_steps=1
-    )
-
-    # -----------------------------
-    # Fit
-    # -----------------------------
-    full_model = KeystrokeLitModel(nn_model, lr=1e-3)
-    trainer.fit(full_model, datamodule=dm)
-    export_to_onnx(checkpoint_cb, wandb_logger, dm.init_periods, use_projector)
-    wandb.finish()
-    # visualize_activations(nn_model, dm)
+    small_loader = dm.train_dataloader()
+    (x1, x2), labels, (u1, u2) = next(iter(small_loader))
+    print((x1[0], x2[0]), labels[0], (u1[0], u2[0]))
+    visualize_keystrokes(x1[0])
+    visualize_keystrokes(x1[1])
+   #  nn_model = LearnPeriodsKeyEmb(periods_dict=dm.init_periods)
+   # # -----------------------------
+   #  # Logging & Callbacks
+   #  # -----------------------------
+   #  tags = [
+   #      f"scenario_{conf.scenario}",
+   #      f"embedding_{conf.embedding_size}",
+   #      f"seqlen_{conf.sequence_length}",
+   #      f"epochs_{conf.epochs}",
+   #      f"trigperiods_{conf.N_PERIODS}"
+   #  ]
+   #  version = datetime.now().strftime("%Y%m%d_%H%M")
+   #  wandb_logger = WandbLogger(project=conf.project, name=FULL_NAME, version=version,
+   #                             log_model=True, tags=tags)
+   #
+   #
+   #  accelerator = "gpu" if torch.cuda.is_available() else "cpu"
+   #  logger.info(f"Device: {accelerator}")
+   #
+   #  # -----------------------------
+   #  # Fit
+   #  # -----------------------------
+   #  full_model = KeystrokeLitModel(nn_model, lr=1e-3)
+   #  trainer.fit(full_model, datamodule=dm)
+   #  export_to_onnx(checkpoint_cb, wandb_logger, dm.init_periods)
+   #  visualize_activations(nn_model, dm)
 
 def visualize_activations(net, datamodule, color="C0"):
     """
@@ -181,5 +159,6 @@ def visualize_activations(net, datamodule, color="C0"):
     return processed_activations
 
 if __name__ == "__main__":
-    file_path = f'data/{conf.scenario}/{conf.scenario}_dev_set.npy'
+    file_path = f'data/{conf.scenario}/{conf.scenario}_dev_set.h5'
     run_experiment(file_path)
+    wandb.finish()

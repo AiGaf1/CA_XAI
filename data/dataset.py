@@ -76,10 +76,10 @@ class KeystrokeDataModule(pl.LightningDataModule):
 
         n_total = len(users)
         n_train = int(n_total * self.train_val_division)
-        n_val = int(n_total * 0.1)
+        # n_val = int(n_total * 0.1)
 
         self._train_users = users[:n_train]
-        self._val_users = users[n_train:n_train + n_val]
+        self._val_users = users[n_train:]
         # self._test_users = users[n_train + n_val:]
 
         print('Train num users', len(self._train_users))
@@ -135,13 +135,13 @@ class KeystrokeDataModule(pl.LightningDataModule):
             persistent_workers=self.persistent_workers and self.num_workers_val > 0,
         )
 
-    def test_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.ds_test,
-            batch_size=self.samples_per_batch_val,
-            num_workers=self.num_workers_val,
-            persistent_workers=self.persistent_workers and self.num_workers_val > 0,
-        )
+    # def test_dataloader(self) -> DataLoader:
+    #     return DataLoader(
+    #         self.ds_test,
+    #         batch_size=self.samples_per_batch_val,
+    #         num_workers=self.num_workers_val,
+    #         persistent_workers=self.persistent_workers and self.num_workers_val > 0,
+    #     )
 
 class PrepareData:
     def __init__(self, dataset, sequence_length, samples_considered_per_epoch, augment=False):
@@ -152,33 +152,55 @@ class PrepareData:
         self.augment = augment
 
     def __getitem__(self, index):
-        user_num = random.randint(0, len(self.user_keys)-1)
-        user_idx = self.user_keys[user_num]
-        session_idx = random.choice(list(self.data[user_idx].keys()))
-        session_1 = self.data[user_idx][session_idx]
-        if self.augment:
-            session_1 = augment_session(session_1)
-        session_1 = get_session_fixed_length(session_1, self.sequence_length, not self.augment)
-        session_1_processed = extract_features_classic(session_1)
+        # first user & session
+        user_idx_1, user_key_1 = self._pick_random_user(self.user_keys)
+        session_idx = self._pick_random_session(user_key_1, exclude_idx=None)
+        session_1 = self._load_and_process_session(user_key_1, session_idx)
 
-        user_num_2 = user_num
-        if random.random() < 0.5:
-            label = 0 # SAME USER
-            session_idx_2 = random.choice([x for x in list(self.data[user_idx].keys()) if x != session_idx])
-            session_2 = self.data[user_idx][session_idx_2]
-        else:
-            label = 1 # DIFFERENT USER
-            while user_num_2 == user_num:
-                user_num_2 = random.randint(0, len(self.user_keys)-1)
-            user_idx_2 = self.user_keys[user_num_2]
-            session_idx_2 = random.choice(list(self.data[user_idx_2].keys()))
-            session_2 = self.data[user_idx_2][session_idx_2]
-        if self.augment:
-            session_2 = augment_session(session_2)
-        session_2 = get_session_fixed_length(session_2, self.sequence_length, not self.augment)
-        session_2_processed = extract_features_classic(session_2)
+        # decide same/different
+        same_user = random.random() < 0.5
+        label = 0 if same_user else 1
 
-        return (session_1_processed, session_2_processed), label, (user_num, user_num_2)
+        if same_user: # SAME USER
+            user_idx_2, user_key_2 = user_idx_1, user_key_1
+            session_idx_2 = self._pick_random_session(user_key_2, exclude_idx=session_idx)
+        else: # DIFFERENT USERS
+            user_idx_2, user_key_2  = self._pick_random_different_user(self.user_keys, user_idx_1)
+            session_idx_2 = self._pick_random_session(user_key_2, exclude_idx=None)
+
+        session_2 = self._load_and_process_session(user_key_2, session_idx_2)
+        return (session_1, session_2), label, (user_idx_1, user_idx_2)
 
     def __len__(self):
         return self.len
+
+    def _load_and_process_session(self, user_id, session_id):
+        """Load raw session → optionally augment → fix length → feature extraction."""
+        session = self.data[user_id][session_id]
+        if self.augment:
+            session = augment_session(session)
+
+        session = get_session_fixed_length(session, self.sequence_length, not self.augment)
+        return extract_features_classic(session)
+
+    @staticmethod
+    def _pick_random_user(user_keys):
+        """Pick a random user (optionally excluding one)."""
+        possible_indices = list(range(len(user_keys)))
+        idx = random.randrange(len(possible_indices))
+        return idx, user_keys[idx]
+
+    @staticmethod
+    def _pick_random_different_user(user_keys, user_idx_1):
+        """Return a random user != user_idx_1 using a fast while-loop."""
+        user_idx_2 = user_idx_1
+        while user_idx_2 == user_idx_1:
+            user_idx_2 = random.randrange(len(user_keys))
+        return user_idx_2, user_keys[user_idx_2]
+
+    def _pick_random_session(self, user_id, exclude_idx=None):
+        """Pick a random session for a given user (optionally excluding one)."""
+        sessions = list(self.data[user_id].keys())
+        if exclude_idx is not None:
+            sessions = [s for s in sessions if s != exclude_idx]
+        return random.choice(sessions)

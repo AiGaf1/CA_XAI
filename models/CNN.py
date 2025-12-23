@@ -1,102 +1,121 @@
 import torch
 import torch.nn as nn
 import conf
-from models.LTE import LTEOrig
+from models.LTE import LTEOrig, create_lte_sequential
 import torch.nn.functional as F
+from collections import OrderedDict
 
 def norm_embeddings(embeddings):
     # return embeddings / torch.sqrt((embeddings ** 2).sum(dim=-1, keepdims=True))
     return F.normalize(embeddings, dim=1, p=2)
 
 def conv_prelu(in_channels: int, out_channels: int, kernel_size: int = 3, padding: int = 1) -> nn.Sequential:
-    return nn.Sequential(
-        nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=padding),
-        nn.PReLU(out_channels),
-    )
+    return nn.Sequential(OrderedDict([
+        ('conv', nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=False)),
+        ('batch_norm', nn.BatchNorm1d(out_channels)),
+        ('PReLU', nn.PReLU(out_channels))
+    ]))
 
-
-class Sum(nn.Module):
-    """Apply several modules to the same input and sum the outputs."""
+class ParallelSum(nn.Module):
+    """Apply several modules to the same input and sum the outputs with learnable weights."""
     def __init__(self, *modules: nn.Module):
         super().__init__()
         self.modules_list = nn.ModuleList(modules)
+        # Learnable weights for each path to improve gradient flow
+        # self.path_weights = nn.Parameter(torch.ones(len(modules)))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> int:
+        # Normalize weights to sum to 1
+        # weights = F.softmax(self.path_weights, dim=0)
         return sum(m(x) for m in self.modules_list)
+        # return sum(w * m(x) for w, m in zip(weights, self.modules_list))
 
-
-def residual_block(channels: int, pool: bool = False) -> nn.Sequential:
+def residual_block(channels: int, downsample: bool = False) -> nn.Sequential:
     """
     A reusable block:
         (conv + PReLU) + (AvgPool or Identity)
         summed with MaxPool in parallel.
     If pool=True, both branches downsample by 2.
     """
-    pool_layer = nn.AvgPool1d(2) if pool else nn.Identity()
-    max_pool = nn.MaxPool1d(2) if pool else nn.Identity()
+    pool_layer = nn.AvgPool1d(2) if downsample else nn.Identity()
+    skip_layer = nn.MaxPool1d(2) if downsample else nn.Identity()
 
     return nn.Sequential(
-        Sum(
-            nn.Sequential(
-                conv_prelu(channels, channels),
-                pool_layer,
-            ),
-            max_pool,
+        ParallelSum(
+            nn.Sequential(conv_prelu(channels, channels), pool_layer,),
+            skip_layer
         ),
-        nn.PReLU(channels),
+        nn.PReLU(channels)
     )
-
 
 class LearnPeriodsKeyEmb(nn.Module):
     def __init__(self, periods_dict, output_size=512, hidden_size=128,
-                 sequence_length=128, vocab_size=256, key_emb_dim=16):
+                 sequence_length=128, vocab_size=256, key_emb_dim=16, use_projector=False):
         super().__init__()
         self.time_encoders = nn.ModuleDict()
         self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
-
+        self.use_projector = use_projector
         for feat, periods in periods_dict.items():
             self.time_encoders[feat] = LTEOrig(init_periods=periods)
 
         input_size = sum(encoder.d_out for encoder in self.time_encoders.values()) + key_emb_dim
-        self.network = nn.Sequential(
+        # Calculate flattened dimension after downsampling (3 pooling layers = 2^3 = 8x reduction)
+        flat_dim = (hidden_size * 2) * (sequence_length // 16)
+
+        self.backbone = nn.Sequential(OrderedDict([
             # Initial conv
-            nn.Conv1d(input_size, hidden_size, kernel_size=3, padding=1),
-            nn.PReLU(hidden_size),
-
-            # Two pooled residual-style blocks at hidden_size
-            residual_block(hidden_size, pool=True),
-            residual_block(hidden_size, pool=True),
-
+            ("enc1_conv", conv_prelu(input_size, hidden_size)),
+            # Downsampling sequence_length by residual blocks (128 -> 64 -> 32 -> 16 -> 8)
+            ("res1_down", residual_block(hidden_size, downsample=True)),
+            ("res2_down", residual_block(hidden_size, downsample=True)),
             # Channel expansion
-            nn.Conv1d(hidden_size, hidden_size * 2, kernel_size=3, padding=1),
-            nn.PReLU(hidden_size * 2),
-
+            ("enc2_conv", conv_prelu(hidden_size, hidden_size * 2)),
             # One pooled residual-style block at 2*hidden_size
-            residual_block(hidden_size * 2, pool=True),
+            ("res3_down", residual_block(hidden_size * 2, downsample=True)),
 
-            # One non-pooled residual-style block (conv branch + identity branch)
-            Sum(
-                conv_prelu(hidden_size * 2, hidden_size * 2),
-                nn.Identity(),
-            ),
-            nn.PReLU(hidden_size * 2),
+            # Deep feature extraction
+            ("res4", residual_block(hidden_size * 2, downsample=True)),
+            ("res5", residual_block(hidden_size * 2, downsample=False)),
 
-            nn.Flatten(),
-            nn.Dropout(p=0.2),
-            nn.Linear(hidden_size * sequence_length * 2 // 8, output_size),
-        )
+            ("flatten", nn.Flatten())
+        ]))
+
+        if self.use_projector:
+            self.projector = nn.Sequential(OrderedDict([
+                ("bn_flat", nn.BatchNorm1d(flat_dim)),
+                ("drop", nn.Dropout(p=0.2)),
+                ("fc_out", nn.Linear(flat_dim, output_size, bias=False))
+            ]))
+        self._init_weights()
+
+    def _init_weights(self):
+        """Proper weight initialization for better gradient flow"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu', a=0.25)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu', a=0.25)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        hold = x[..., 0]
-        flight = x[..., 1]
-        keys = x[..., 2].long()
-
+        hold, flight, keys = x.unbind(dim=-1)
+        keys = keys.long()
         encoded_x = [
             self.time_encoders["hold"](hold),
             self.time_encoders["flight"](flight),
             self.key_embedding(keys)  # key
         ]
-        encoded_x = torch.cat(encoded_x, dim=-1)
-        encoded_x = encoded_x.transpose(2, 1)
-        embedding = self.network(encoded_x)
+        encoded_x = torch.cat(encoded_x, dim=-1)  # (B, L, C)
+        encoded_x = encoded_x.transpose(1, 2)  # (B, C, L)
+
+        features = self.backbone(encoded_x)
+
+        if self.use_projector:
+            embedding = self.projector(features)
+        else:
+            embedding = features
+
+        embedding = norm_embeddings(embedding)
         return embedding
