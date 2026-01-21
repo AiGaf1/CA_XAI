@@ -11,8 +11,9 @@ samples_per_batch_train = 512
 samples_per_batch_val = 512
 #----Model-Variables------
 N_PERIODS = 16
-sequence_length = 128
-embedding_size = 512
+sequence_length = 32
+embedding_size = 128
+use_projector = False
 #----Optimization-Variables------
 lr_scheduler_T_max = 2500
-epochs = 5
+epochs = 1000

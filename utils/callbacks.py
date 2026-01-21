@@ -5,6 +5,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateFinder
 import torch
 import matplotlib.pyplot as plt
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 
 
 class PeriodicLRFinder(LearningRateFinder):
@@ -149,6 +150,21 @@ class PeriodicLRFinder(LearningRateFinder):
                     print(f"Scheduler updated successfully. T_0={T_0}, T_mult={T_mult}")
                     break
 
+def create_callbacks(scenario: str) -> list[pl.Callback]:
+    """Create training callbacks for checkpointing and monitoring."""
+    checkpoint_cb = ModelCheckpoint(
+        monitor="val/eer",
+        mode="min",
+        filename=f'{scenario}' + "-{epoch:02d}-{val/eer:.2f}",
+        save_top_k=1,
+        save_last=True,
+        auto_insert_metric_name=False
+    )
+
+    lr_monitor = LearningRateMonitor(logging_interval=None)
+    validation_silent_bar = ValidationSilentProgressBar()
+
+    return [checkpoint_cb, lr_monitor, validation_silent_bar]
 
 class ValidationSilentProgressBar(TQDMProgressBar):
     def init_validation_tqdm(self):

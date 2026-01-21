@@ -2,20 +2,27 @@ import numpy as np
 import random
 import torch
 
+
 def extract_features_classic(session):
     """
     Extract keystroke dynamics features from a session.
     session: np.ndarray of shape (N, 3) with columns [press_time, release_time, key_code]
     """
-    press = session[:, 0].astype(np.float64) / 1000.0
-    release = session[:, 1].astype(np.float64) / 1000.0
-    ascii_f = session[:, 2].astype(int)
 
-    hold = release - press
-    flight_time = np.zeros_like(press)
-    flight_time[1:] = press[1:] - release[:-1]
+    try:
+        press = session[:, 0].astype(np.float64) / 1000.0
+        release = session[:, 1].astype(np.float64) / 1000.0
+        ascii_f = session[:, 2].astype(int)
 
-    numeric_feats = np.column_stack([hold, flight_time, ascii_f])
+        hold = release - press
+        flight_time = np.zeros_like(press)
+        flight_time[1:] = press[1:] - release[:-1]
+
+        numeric_feats = np.column_stack([hold, flight_time, ascii_f])
+    except:
+        print(session)
+        print(session.shape)
+
     return numeric_feats
 
 def get_session_fixed_length(session, sequence_length, start_zero=True):
@@ -27,6 +34,37 @@ def get_session_fixed_length(session, sequence_length, start_zero=True):
         start_idx = np.random.randint(0, session.shape[0] - 1)
     # print(tiled.shape, start_idx, sequence_length, tiled[start_idx:start_idx+sequence_length].shape)
     return tiled[start_idx:start_idx+sequence_length]
+
+def get_session_fixed_length_zero_pad_with_mask(session, sequence_length, start_zero=True):
+    T, D = session.shape
+    mask = np.zeros(sequence_length, dtype=np.bool_)
+
+    if T >= sequence_length:
+        start_idx = 0 if start_zero else np.random.randint(0, T - sequence_length + 1)
+        mask[:] = True
+        return session[start_idx:start_idx + sequence_length], mask
+
+    padded = np.zeros((sequence_length, D), dtype=session.dtype)
+    padded[:T] = session
+    mask[:T] = 1 #True
+    return padded, mask
+
+
+def get_session_fixed_length_zero_pad(session, sequence_length, start_zero=True):
+    T, D = session.shape
+
+    # Case 1: session is long enough → crop
+    if T >= sequence_length:
+        if start_zero:
+            start_idx = 0
+        else:
+            start_idx = np.random.randint(0, T - sequence_length + 1)
+        return session[start_idx:start_idx + sequence_length]
+
+    # Case 2: session is too short → zero-pad
+    padded = np.zeros((sequence_length, D), dtype=session.dtype)
+    padded[:T] = session
+    return padded
 
 def augment_session(session):
     new_session = []

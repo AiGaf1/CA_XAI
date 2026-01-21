@@ -6,8 +6,6 @@ from typing import Any, Dict, Tuple
 from data.metrics import compute_eer
 from pytorch_lightning.loggers import WandbLogger
 import conf
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 
 class KeystrokeLitModel(pl.LightningModule):
@@ -20,8 +18,8 @@ class KeystrokeLitModel(pl.LightningModule):
             module.name = name
         self.save_hyperparameters(ignore=['model'])
 
-    def forward(self, batch_x: tuple) -> torch.Tensor:
-        return self.model(batch_x.float())
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        return self.model(x, mask)
 
     def _step_common(
         self, batch: Tuple[Tuple[torch.Tensor, torch.Tensor],
@@ -30,10 +28,11 @@ class KeystrokeLitModel(pl.LightningModule):
         """
         batch = ((x1_features, x1_keys), (x2_features, x2_keys)), labels, (u1, u2)
         """
-        (x1, x2), labels, (u1, u2) = batch
+        (x1, mask1), (x2, mask2), labels, (u1, u2) = batch
 
-        # Encode both views
-        z1 = self(x1); z2 = self(x2)
+        z1 = self(x1, mask1)
+        z2 = self(x2, mask2)
+
         embeddings  = torch.cat([z1, z2], dim=0)
         user_idx = torch.cat([u1, u2], dim=0)
 
@@ -54,13 +53,23 @@ class KeystrokeLitModel(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         return self._step_common(batch, "val")
 
-
     # def test_step(self, batch, batch_idx):
     #     out = self._step_common(batch)
     #     test_loss = contrastive_loss(out["z1"], out["z2"], out["labels"].float())
     #     self.log("test/loss", test_loss, prog_bar=True, on_epoch=True)
     #     self.log("test/eer", out["eer"], prog_bar=True, on_epoch=True)
     #     return {"test_loss": test_loss.detach()}
+
+    def predict_step(self, batch, batch_idx):
+        fix_sessions, masks, session_ids = batch
+
+        # Get embeddings from model (pass mask if your model uses it)
+        embeddings = self.forward(fix_sessions, mask=masks)  # adjust based on your model's forward signature
+        # OR if model doesn't use mask:
+        # embeddings = self.forward(fix_sessions)
+
+        # Return list of (session_id, embedding) tuples
+        return [(sid, emb.cpu()) for sid, emb in zip(session_ids, embeddings)]
 
     def on_train_start(self):
         # Attach model/grad logging in W&B

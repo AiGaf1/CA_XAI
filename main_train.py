@@ -1,13 +1,11 @@
 from dotenv import load_dotenv
 import os
 import numpy as np
-from datetime import datetime
 
 import wandb
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.tuner import Tuner
 import matplotlib.pyplot as plt
 import math
@@ -17,30 +15,36 @@ from torch import nn
 from data.dataset import KeystrokeDataModule
 from utils.tools import setup_logger
 from models.Litmodel import KeystrokeLitModel
-from utils.callbacks import ValidationSilentProgressBar, PeriodicLRFinder
-from models.CNN import LearnPeriodsKeyEmb, norm_embeddings
-from models.LTE import  LTEOrig, MultiplyFreqs, SinCos, ScaledSigmoid
-from utils.tools import export_to_onnx
+from utils.callbacks import create_callbacks
+from models.CNN import CNN_LTE, norm_embeddings
+from models.transformer import Transformer_LTE
+from models.LTE import  LTEOrig
+from utils.tools import export_to_onnx, setup_wandb_logging, save_predictions, load_comparisons
 import conf
-import h5py
 
 logger = setup_logger("main")
 
-def init_launch():
-    pl.seed_everything(conf.seed, workers=True)
+def initialize_environment() -> None:
+    """Initialize training environment with reproducibility settings."""
+    pl.seed_everything(conf.seed, workers=True, verbose=False)
     load_dotenv()
     wandb.login(key=os.getenv("WAND_API_KEY"))
     torch.set_float32_matmul_precision('high')
 
-def run_experiment(file_path: str):
-    FULL_NAME = f'{conf.epochs}_{conf.scenario}'
-    init_launch()
-    logger.info("Data Loading...")
+    logger.info(f"Environment initialized with seed: {conf.seed}")
 
-    data = np.load(file_path, allow_pickle=True).item()
+def create_data_module(
+        file_path: str,
+        predict_file_path: str = None,
+        min_session_length: int = 5,
+) -> KeystrokeDataModule:
+    """Create and setup the data module for training and prediction."""
+    logger.info("Loading data...")
+    raw_data = np.load(file_path, allow_pickle=True).item()
 
     dm = KeystrokeDataModule(
-        data=data,
+        raw_data=raw_data,
+        predict_file_path=predict_file_path,
         sequence_length=conf.sequence_length,
         samples_per_batch_train=conf.samples_per_batch_train,
         samples_per_batch_val=conf.samples_per_batch_val,
@@ -49,45 +53,25 @@ def run_experiment(file_path: str):
         train_val_division=conf.train_val_division,
         augment=True,
         seed=conf.seed,
-        )
-
-    dm.setup(None)
-    use_projector = False
-    nn_model = LearnPeriodsKeyEmb(periods_dict=dm.init_periods, use_projector=use_projector)
-   # -----------------------------
-    # Logging & Callbacks
-    # -----------------------------
-    tags = [
-        f"scenario_{conf.scenario}",
-        f"embedding_{conf.embedding_size}",
-        f"seqlen_{conf.sequence_length}",
-        f"epochs_{conf.epochs}",
-        f"trigperiods_{conf.N_PERIODS}",
-        f"head_{use_projector}"
-    ]
-    version = datetime.now().strftime("%Y%m%d_%H%M")
-    wandb_logger = WandbLogger(project=conf.project, name=FULL_NAME, version=version,
-                               log_model=True, tags=tags)
-
-    checkpoint_cb = ModelCheckpoint(
-        monitor="val/eer",
-        mode="min",
-        filename= f'{conf.scenario}' + "-{epoch:02d}-{val/eer:.2f}",
-        save_top_k=1,
-        save_last=True,
-        auto_insert_metric_name=False
+        min_session_length=min_session_length
     )
+    dm.setup(None)
 
-    lr_monitor = LearningRateMonitor(logging_interval=None)
-    validation_silent_bar = ValidationSilentProgressBar()
+    logger.info(f"Data module created with {dm.num_train_users} training users")
+    return dm
 
+def create_trainer(
+        wandb_logger: WandbLogger = None,
+        callbacks: list[pl.Callback] = None
+) -> pl.Trainer:
+    """Create PyTorch Lightning trainer with optimal settings."""
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Device: {accelerator}")
+    logger.info(f"Using device: {accelerator}")
 
-    trainer = pl.Trainer(
+    return pl.Trainer(
         max_epochs=conf.epochs,
         logger=wandb_logger,
-        callbacks=[checkpoint_cb, lr_monitor, validation_silent_bar],
+        callbacks=callbacks,
         precision="bf16-mixed",
         gradient_clip_val=1.0,
         accelerator=accelerator,
@@ -97,14 +81,29 @@ def run_experiment(file_path: str):
         num_sanity_val_steps=1
     )
 
-    # -----------------------------
-    # Fit
-    # -----------------------------
-    full_model = KeystrokeLitModel(nn_model, lr=1e-3)
-    trainer.fit(full_model, datamodule=dm)
-    export_to_onnx(checkpoint_cb, wandb_logger, dm.init_periods, use_projector)
-    wandb.finish()
-    # visualize_activations(nn_model, dm)
+def run_predictions(
+        trainer: pl.Trainer,
+        model: KeystrokeLitModel,
+        datamodule: KeystrokeDataModule,
+        checkpoint_path: str = "best"
+) -> dict[str, torch.Tensor]:
+    """Run predictions and collect embeddings."""
+    logger.info("Running predictions...")
+
+    predictions = trainer.predict(
+        model,
+        ckpt_path=checkpoint_path
+    )
+
+    # Aggregate embeddings from all batches
+    embeddings = {}
+    for batch_predictions in predictions:
+        for session_id, embedding in batch_predictions:
+            embeddings[session_id] = embedding
+
+    logger.info(f"Collected {len(embeddings)} session embeddings")
+    return embeddings
+
 
 def visualize_activations(net, datamodule, color="C0"):
     """
@@ -180,6 +179,63 @@ def visualize_activations(net, datamodule, color="C0"):
 
     return processed_activations
 
+def compute_distances4comps(embeddings, comps, metric="euclidean"):
+    distances = {}
+    for comp in comps:
+        e1, e2 = norm_embeddings(embeddings[comp[0]]), norm_embeddings(embeddings[comp[1]])
+        distance = compute_distance(e1, e2, metric)
+        distances[str(comp)] = distance
+    return distances
+
+def compute_distance(e1, e2, metric):
+    if metric == "euclidean":
+        distance = nn.functional.pairwise_distance(e1, e2).item()
+    elif metric == "cosine":
+        distance = nn.functional.cosine_similarity(e1, e2).item()
+    else:
+        raise ValueError(f"Unknown metric {metric}")
+    return distance
+
+def normalize_distances(distances):
+    """
+    Convert distances to similarity in [0, 1]
+    """
+    distances_list = torch.tensor(list(distances.values()), dtype=torch.float32)
+    max_dist = distances_list.max()
+    similarities = 1 - distances_list / max_dist
+    return similarities.tolist()
+
+def run_experiment(file_path: str, predict_file_path: str):
+
+    initialize_environment()
+    # Setup data and model
+    dm = create_data_module(file_path, predict_file_path)
+    nn_model = Transformer_LTE(periods_dict=dm.init_periods, use_projector=conf.use_projector,
+                               sequence_length=conf.sequence_length)
+    # Setup training
+    wandb_logger, version = setup_wandb_logging(use_projector=conf.use_projector)
+    callbacks = create_callbacks(conf.scenario)
+    trainer = create_trainer(wandb_logger, callbacks)
+
+    lit_model = KeystrokeLitModel(nn_model, lr=1e-3)
+    trainer.fit(lit_model, datamodule=dm)
+
+    # # Run predictions
+    # ckpt_path = "Keystroke-XAI/20251227_0330/checkpoints/mobile-769-1.49.ckpt"
+    # embeddings = run_predictions(trainer, lit_model, dm, ckpt_path)
+    # comparisons = load_comparisons(conf.scenario, logger)
+    # #
+    # distances = compute_distances4comps(embeddings, comparisons, metric="euclidean")
+    # similarities = normalize_distances(distances) # No need for second normalization
+    # #
+    # # save_predictions(similarities, conf.scenario, logger)
+    #
+    # export_to_onnx(ckpt_path, wandb_logger, nn_model)
+    # wandb.finish()
+    # # visualize_activations(nn_model, dm)
+
 if __name__ == "__main__":
     file_path = f'data/{conf.scenario}/{conf.scenario}_dev_set.npy'
-    run_experiment(file_path)
+    predict_file_path = f'data/{conf.scenario}/{conf.scenario}_test_sessions.npy'
+
+    run_experiment(file_path, predict_file_path)

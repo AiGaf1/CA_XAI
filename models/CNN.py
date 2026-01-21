@@ -7,7 +7,7 @@ from collections import OrderedDict
 
 def norm_embeddings(embeddings):
     # return embeddings / torch.sqrt((embeddings ** 2).sum(dim=-1, keepdims=True))
-    return F.normalize(embeddings, dim=1, p=2)
+    return F.normalize(embeddings, dim=-1, p=2)
 
 def conv_prelu(in_channels: int, out_channels: int, kernel_size: int = 3, padding: int = 1) -> nn.Sequential:
     return nn.Sequential(OrderedDict([
@@ -48,7 +48,7 @@ def residual_block(channels: int, downsample: bool = False) -> nn.Sequential:
         nn.PReLU(channels)
     )
 
-class LearnPeriodsKeyEmb(nn.Module):
+class CNN_LTE(nn.Module):
     def __init__(self, periods_dict, output_size=512, hidden_size=128,
                  sequence_length=128, vocab_size=256, key_emb_dim=16, use_projector=False):
         super().__init__()
@@ -60,7 +60,8 @@ class LearnPeriodsKeyEmb(nn.Module):
 
         input_size = sum(encoder.d_out for encoder in self.time_encoders.values()) + key_emb_dim
         # Calculate flattened dimension after downsampling (3 pooling layers = 2^3 = 8x reduction)
-        flat_dim = (hidden_size * 2) * (sequence_length // 16)
+        # flat_dim = (hidden_size * 2) * (sequence_length // 16)
+        flat_dim = hidden_size * 2
 
         self.backbone = nn.Sequential(OrderedDict([
             # Initial conv
@@ -99,7 +100,10 @@ class LearnPeriodsKeyEmb(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x):
+    def forward(self, x, mask):
+        x = x.float()
+        mask = mask.float()
+
         hold, flight, keys = x.unbind(dim=-1)
         keys = keys.long()
         encoded_x = [
@@ -108,14 +112,27 @@ class LearnPeriodsKeyEmb(nn.Module):
             self.key_embedding(keys)  # key
         ]
         encoded_x = torch.cat(encoded_x, dim=-1)  # (B, L, C)
+        # Apply mask here to zero padded positions BEFORE the backbone
+        # encoded_x = encoded_x * mask.unsqueeze(-1)
+
         encoded_x = encoded_x.transpose(1, 2)  # (B, C, L)
+        features = self.backbone(encoded_x) # (B, C, L')
 
-        features = self.backbone(encoded_x)
+        # Using avg_pool to get proportional weights
+        # ds_factor = encoded_x.shape[-1] // features.shape[-1]
+        # mask = mask.unsqueeze(1)  # (B, 1, L) for pooling
+        # mask_ds = F.avg_pool1d(mask, kernel_size=ds_factor, stride=ds_factor, padding=0).squeeze(1)  # (B, L')
 
+        # Apply downsampled mask (fractional weights)
+        # features = features * mask_ds.unsqueeze(1)  # (B, C', L')
+
+        # Weighted average: sum over L', divide by sum of weights
+        # denom = mask_ds.sum(dim=-1, keepdim=True) + 1e-8  # Avoid div by zero, (B, 1)
+        # features = features.sum(dim=-1) / denom  # (B, C')
+
+        embedding = features
         if self.use_projector:
             embedding = self.projector(features)
-        else:
-            embedding = features
 
         embedding = norm_embeddings(embedding)
         return embedding
