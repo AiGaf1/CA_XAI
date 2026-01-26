@@ -45,7 +45,7 @@ def create_data_module(
     dm = KeystrokeDataModule(
         raw_data=raw_data,
         predict_file_path=predict_file_path,
-        sequence_length=conf.sequence_length,
+        sequence_length=min_session_length, # conf.sequence_length
         samples_per_batch_train=conf.samples_per_batch_train,
         samples_per_batch_val=conf.samples_per_batch_val,
         batches_per_epoch_train=conf.batches_per_epoch_train,

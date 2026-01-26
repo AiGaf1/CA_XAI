@@ -11,7 +11,7 @@ samples_per_batch_train = 512
 samples_per_batch_val = 512
 #----Model-Variables------
 N_PERIODS = 16
-sequence_length = 32
+sequence_length = 64
 embedding_size = 128
 use_projector = False
 #----Optimization-Variables------

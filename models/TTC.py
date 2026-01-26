@@ -6,6 +6,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
+import conf
+
+
 class UserBaselineKNN:
     def __init__(self, embeddings: np.ndarray, k: int = 2):
         """
@@ -65,7 +68,7 @@ class TemporalConfidence:
         z = (score - mu) / sigma
 
         return z
-        return torch.sigmoid(z)
+        # return torch.sigmoid(z)
 
 def compute_confidence_signal(session_embeddings, baseline, conf_map):
     C = []
@@ -104,24 +107,36 @@ class ConfidenceCollapseDetector:
                 return t
         return None
 
-def plot_confidence(C, tau_star, tau_hat):
-    # C_plot = np.concatenate([np.ones(windows_size), C])
+def plot_confidence(C, tau_star, tau_hat, label, window_size=64):
+    # Pad the beginning with NaNs (no confidence before first full window)
+    C_plot = np.concatenate([np.full(window_size, np.nan), C])
+
     plt.figure(figsize=(10, 4))
-    plt.plot(C, label="Confidence $C_t$")
-    plt.axvline(tau_star, color='green', linestyle='--', label="True Attack takeover")
-    if tau_hat is not None:
-        plt.axvline(tau_hat, color='red', linestyle='--', label="Detected collapse")
-    plt.ylim(0, 1)
+    plt.plot(C_plot, label="Confidence $C_t$")
+
+    # Shift change-points to match padded timeline
+    plt.axvline(tau_star + window_size,
+                color='green', linestyle='--', label="True attack takeover")
+
+    user_type = 'Attacker' if label == 1 else 'Legitimate User'
+    title = f"Temporal Confidence Collapse - {user_type}"
+    # if tau_hat is not None:
+    #     plt.axvline(tau_hat + window_size,
+    #                 color='red', linestyle='--', label="Detected takeover")
+
+    # plt.ylim(0, 1)
     plt.legend()
-    plt.title("Temporal Confidence Collapse")
-    plt.xlabel("Time window")
+    plt.title(title)
+    plt.xlabel("Event index")
     plt.ylabel("Confidence")
     plt.show()
+
 
 def run_tcc_experiment(
     baseline,
     session_embeddings,
     tau_star,
+    label
 ):
     """
     tau_star: first index where attacker appears
@@ -147,5 +162,5 @@ def run_tcc_experiment(
     )
 
     tau_hat = detector.detect(C)
-    plot_confidence(C, tau_star, tau_hat)
+    plot_confidence(C, tau_star, tau_hat, label=label, window_size=conf.sequence_length)
     return C, tau_hat

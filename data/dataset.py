@@ -54,7 +54,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
         self.min_session_length = min_session_length
 
     @staticmethod
-    def _filter_data(data, min_session_length=5, min_len_sessions=2) -> dict:
+    def _filter_data(data, min_session_length=5, min_len_sessions=4) -> dict:
         # Drop sessions with <5 samples and users with <2 sessions
         to_delete = []
         for user_key, sessions in data.items():
@@ -95,6 +95,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
             self.val_data = {u: self.data[u] for u in self._val_users}
             # self.test_data = {u: data[u] for u in self._test_users}
 
+            self.val_shared_pairs = build_cross_user_sequence_pairs(self.val_data)
             min_max = compute_feature_quantiles(self.train_data)
             self.init_periods = compute_init_periods(min_max, conf.N_PERIODS)
 
@@ -110,6 +111,13 @@ class KeystrokeDataModule(pl.LightningDataModule):
                 samples_considered_per_epoch=self.batches_per_epoch_val * self.samples_per_batch_val,
                 augment=False,
             )
+            self.ds_val_same_seq = SameSequenceContrastiveData(
+                self.val_data,
+                self.val_shared_pairs,
+                sequence_length=self.sequence_length,
+                augment=False
+            )
+
         if stage == "predict":
             # self.pred_data = np.load(self.predict_file_path, allow_pickle=True).item()
             # self.ds_predict = PreparePredictData(
@@ -138,6 +146,15 @@ class KeystrokeDataModule(pl.LightningDataModule):
             num_workers=self.num_workers_val,
             persistent_workers=self.persistent_workers and self.num_workers_val > 0,
             shuffle=False
+        )
+
+    def val_same_sequence_dataloader(self):
+        return DataLoader(
+            self.ds_val_same_seq,
+            batch_size=self.samples_per_batch_val,
+            shuffle=False,
+            num_workers=self.num_workers_val,
+            persistent_workers=self.persistent_workers and self.num_workers_val > 0,
         )
 
     # def test_dataloader(self) -> DataLoader:
@@ -250,3 +267,79 @@ class PreparePredictData:
         )
         return fix_session, mask, session_id
 
+from collections import defaultdict
+from itertools import combinations
+
+class SameSequenceContrastiveData:
+    def __init__(self, data, shared_pairs, sequence_length, augment=False):
+        self.data = data
+        self.shared_pairs = shared_pairs
+        self.sequence_length = sequence_length
+        self.augment = augment
+
+        self.user_keys = list(self.data.keys())
+        self.user_to_idx = {u: i for i, u in enumerate(self.user_keys)}
+
+    def __len__(self):
+        return len(self.shared_pairs)
+
+    def __getitem__(self, idx):
+        u1, s1, u2, s2, _ = self.shared_pairs[idx]
+
+        session_1, mask_1 = self._load(u1, s1)
+        session_2, mask_2 = self._load(u2, s2)
+
+        label = 1  # SAME SEQUENCE, DIFFERENT USER
+
+        return (
+            (session_1, mask_1),
+            (session_2, mask_2),
+            label,
+            (self.user_to_idx[u1], self.user_to_idx[u2]),
+        )
+
+    def _load(self, user_id, session_id):
+        session = self.data[user_id][session_id]
+
+        if self.augment:
+            session = augment_session(session)
+
+        prep = extract_features_classic(session)
+        fixed, mask = get_session_fixed_length_zero_pad_with_mask(
+            prep, self.sequence_length, self.augment
+        )
+
+        return fixed, mask
+
+
+def build_cross_user_sequence_pairs(data, key_col=2, min_unique_keys=5):
+    """
+    Returns a list of tuples:
+    (user_id_1, session_id_1, user_id_2, session_id_2, sequence)
+    """
+
+    sequence_index = defaultdict(lambda: defaultdict(list))
+    # seq -> user -> [session_ids]
+
+    for user_id, sessions in data.items():
+        for sess_id, sess in sessions.items():
+            seq = tuple(int(x) for x in sess[:, key_col])
+
+            # remove degenerate sessions
+            if len(set(seq)) < min_unique_keys:
+                continue
+
+            sequence_index[seq][user_id].append(sess_id)
+
+    pairs = []
+
+    for seq, user_map in sequence_index.items():
+        if len(user_map) < 2:
+            continue
+
+        for (u1, sids1), (u2, sids2) in combinations(user_map.items(), 2):
+            for sid1 in sids1:
+                for sid2 in sids2:
+                    pairs.append((u1, sid1, u2, sid2, seq))
+
+    return pairs
