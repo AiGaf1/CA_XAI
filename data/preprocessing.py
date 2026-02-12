@@ -150,11 +150,25 @@ def compute_feature_quantiles(dataset):
     all_features = np.vstack(all_features)  # shape: (total_keystrokes, num_features)
     feature_names = ['hold', 'flight']
 
-    # feature_names = ['hold', 'press_to_press', 'flight', 'release_to_release', 'rel_press', 'rel_release']
+    # feature_names = ['hold', 'flight']
     clip_dict = {}
     for i, name in enumerate(feature_names):
         quantile_values = np.quantile(all_features[:, i], [0.01, 0.99])
-        clip_dict[name] = np.round(quantile_values, 4)
+        min_val = safe_min_quantile(all_features[:, i])
+        max_val = max(quantile_values[1], min_val + 1e-6)
+        clip_dict[name] = {"min": float(min_val), "max": float(max_val)}
+
         print(f"{name}: 1% = {quantile_values[0]:.4f}, 99% = {quantile_values[1]:.4f}")
     return clip_dict
+
+def safe_min_quantile(feature_values, start_q=0.01, step=0.01):
+    q = start_q
+    min_val = np.quantile(feature_values, q)
+    while min_val <= 0 and q < 1.0:
+        q += step
+        min_val = np.quantile(feature_values, q)
+    return min_val
+
+
+
 

@@ -123,7 +123,7 @@ def export_to_onnx(ckpt_path: str, wandb_logger: WandbLogger, model):
                 'mask': {0: 'batch_size'},
                 'embedding': {0: 'batch_size'}
             },
-            dynamo = False
+            dynamo = True
         )
 
     # Extract run_id from a path (assuming structure like "Keystroke-XAI/20251227_0330/checkpoints/...")

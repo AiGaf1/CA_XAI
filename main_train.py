@@ -6,7 +6,6 @@ import wandb
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.tuner import Tuner
 import matplotlib.pyplot as plt
 import math
 import seaborn as sns
@@ -18,7 +17,7 @@ from models.Litmodel import KeystrokeLitModel
 from utils.callbacks import create_callbacks
 from models.CNN import CNN_LTE, norm_embeddings
 from models.transformer import Transformer_LTE
-from models.LTE import  LTEOrig
+from models.LTE import  LearnableFourierFeatures
 from utils.tools import export_to_onnx, setup_wandb_logging, save_predictions, load_comparisons
 import conf
 
@@ -37,6 +36,8 @@ def create_data_module(
         file_path: str,
         predict_file_path: str = None,
         min_session_length: int = 5,
+        sequence_length: int = conf.sequence_length,
+        min_sessions_per_user: int = 2
 ) -> KeystrokeDataModule:
     """Create and setup the data module for training and prediction."""
     logger.info("Loading data...")
@@ -45,7 +46,7 @@ def create_data_module(
     dm = KeystrokeDataModule(
         raw_data=raw_data,
         predict_file_path=predict_file_path,
-        sequence_length=min_session_length, # conf.sequence_length
+        sequence_length=sequence_length, # conf.sequence_length, min_session_length
         samples_per_batch_train=conf.samples_per_batch_train,
         samples_per_batch_val=conf.samples_per_batch_val,
         batches_per_epoch_train=conf.batches_per_epoch_train,
@@ -53,7 +54,8 @@ def create_data_module(
         train_val_division=conf.train_val_division,
         augment=True,
         seed=conf.seed,
-        min_session_length=min_session_length
+        min_session_length=min_session_length,
+        min_sessions_per_user=min_sessions_per_user
     )
     dm.setup(None)
 
@@ -125,7 +127,7 @@ def visualize_activations(net, datamodule, color="C0"):
     for name, module in net.named_modules():
         if hasattr(module, 'weight') or isinstance(module, (nn.ReLU, nn.LeakyReLU, nn.Tanh,
                                                             nn.Sigmoid, nn.GELU, nn.BatchNorm1d,
-                                                            nn.BatchNorm2d, nn.LayerNorm, LTEOrig)):
+                                                            nn.BatchNorm2d, nn.LayerNorm, LearnableFourierFeatures)):
             hooks.append(module.register_forward_hook(hook_fn(name)))
 
     # Get a batch of data and run forward pass
@@ -210,7 +212,7 @@ def run_experiment(file_path: str, predict_file_path: str):
     initialize_environment()
     # Setup data and model
     dm = create_data_module(file_path, predict_file_path)
-    nn_model = Transformer_LTE(periods_dict=dm.init_periods, use_projector=conf.use_projector,
+    nn_model = Transformer_LTE(periods_dict=dm.min_max, use_projector=conf.use_projector,
                                sequence_length=conf.sequence_length)
     # Setup training
     wandb_logger, version = setup_wandb_logging(use_projector=conf.use_projector)
@@ -219,6 +221,8 @@ def run_experiment(file_path: str, predict_file_path: str):
 
     lit_model = KeystrokeLitModel(nn_model, lr=1e-3)
     trainer.fit(lit_model, datamodule=dm)
+    best_model_path = trainer.checkpoint_callback.best_model_path
+    print(f"Best model path: {best_model_path}")
 
     # # Run predictions
     # ckpt_path = "Keystroke-XAI/20251227_0330/checkpoints/mobile-769-1.49.ckpt"
@@ -230,12 +234,19 @@ def run_experiment(file_path: str, predict_file_path: str):
     # #
     # # save_predictions(similarities, conf.scenario, logger)
     #
-    # export_to_onnx(ckpt_path, wandb_logger, nn_model)
-    # wandb.finish()
+    checkpoint_cb = callbacks[0]
+    best_model_path = checkpoint_cb.best_model_path
+    print(f"Best model path: {best_model_path}")
+    export_to_onnx(best_model_path, wandb_logger, nn_model)
+    wandb.finish()
     # # visualize_activations(nn_model, dm)
 
 if __name__ == "__main__":
     file_path = f'data/{conf.scenario}/{conf.scenario}_dev_set.npy'
     predict_file_path = f'data/{conf.scenario}/{conf.scenario}_test_sessions.npy'
 
+    # n_periods = [4, 8, 16, 32, 64]
+    #
+    # for i in n_periods:
+    conf.N_PERIODS = 64
     run_experiment(file_path, predict_file_path)

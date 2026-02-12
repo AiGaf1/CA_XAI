@@ -5,6 +5,7 @@ from scipy.stats import multivariate_normal
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
+from datetime import datetime
 
 import conf
 
@@ -94,8 +95,8 @@ class ConfidenceCollapseDetector:
         for C in self.C_legit_sessions:
             deltas.append(self.mu - C)
         deltas = np.array(deltas)
-        print("#################")
-        print(deltas)
+        # print("#################")
+        # print(deltas)
         k = np.quantile(deltas, quantile)
         return float(k)
 
@@ -107,36 +108,59 @@ class ConfidenceCollapseDetector:
                 return t
         return None
 
-def plot_confidence(C, tau_star, tau_hat, label, window_size=64):
+def plot_confidence(C, tau_star, tau_hat, label,
+                    window_size=64, save_path="XAI_output/", dpi=300):
+
     # Pad the beginning with NaNs (no confidence before first full window)
     C_plot = np.concatenate([np.full(window_size, np.nan), C])
 
-    plt.figure(figsize=(10, 4))
-    plt.plot(C_plot, label="Confidence $C_t$")
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(C_plot, label=r"Confidence $C_t$")
 
-    # Shift change-points to match padded timeline
-    plt.axvline(tau_star + window_size,
-                color='green', linestyle='--', label="True attack takeover")
+    ax.axvline(
+        tau_star + window_size,
+        color="green",
+        linestyle="--",
+        label="True attack takeover"
+    )
 
-    user_type = 'Attacker' if label == 1 else 'Legitimate User'
-    title = f"Temporal Confidence Collapse - {user_type}"
+    # Optional detected change point
     # if tau_hat is not None:
-    #     plt.axvline(tau_hat + window_size,
-    #                 color='red', linestyle='--', label="Detected takeover")
+    #     ax.axvline(
+    #         tau_hat + window_size,
+    #         color="red",
+    #         linestyle="--",
+    #         label="Detected takeover"
+    #     )
+    user_type = "Attacker" if label == 1 else "Legitimate User"
+    ax.set_title(f"Temporal Confidence Collapse — {user_type}")
+    ax.set_xlabel("Event index")
+    ax.set_ylabel("Confidence")
 
-    # plt.ylim(0, 1)
-    plt.legend()
-    plt.title(title)
-    plt.xlabel("Event index")
-    plt.ylabel("Confidence")
+    ax.legend()
+    fig.tight_layout()
+
+    # SAVE FIRST
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    save_path = save_path + f"confidence_{timestamp}.png"
+
+    fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+
+    # THEN SHOW
     plt.show()
+
+    # Clean up explicitly (important in loops)
+    plt.close(fig)
 
 
 def run_tcc_experiment(
     baseline,
     session_embeddings,
     tau_star,
-    label
+    label,
+    window_size
 ):
     """
     tau_star: first index where attacker appears
@@ -156,11 +180,11 @@ def run_tcc_experiment(
         baseline,
         conf_map
     )
-    print('Confidence Signal:', C)
+    # print('Confidence Signal:', C)
     detector = ConfidenceCollapseDetector(
         legit_confidence=C[:tau_star]
     )
 
     tau_hat = detector.detect(C)
-    plot_confidence(C, tau_star, tau_hat, label=label, window_size=conf.sequence_length)
+    plot_confidence(C, tau_star, tau_hat, label=label, window_size=window_size)
     return C, tau_hat

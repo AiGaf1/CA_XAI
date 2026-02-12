@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import conf
-from models.LTE import LTEOrig, create_lte_sequential
+from models.LTE import LearnableFourierFeatures
 import torch.nn.functional as F
 from collections import OrderedDict
 
@@ -13,15 +13,13 @@ class Transformer_LTE(nn.Module):
                  sequence_length=128, vocab_size=256, key_emb_dim=16, use_projector=False,
                  num_layers=4, num_heads=2, ff_dim=512, dropout=0.1):
         super().__init__()
-        self.time_encoders = nn.ModuleDict()
         self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
         self.use_projector = use_projector
         self.sequence_length = sequence_length
         self.d_model = hidden_size
-        for feat, periods in periods_dict.items():
-            self.time_encoders[feat] = LTEOrig(init_periods=periods)
+        self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=conf.N_PERIODS)
 
-        input_size = sum(encoder.d_out for encoder in self.time_encoders.values()) + key_emb_dim
+        input_size = self.time_encoders.d_out + key_emb_dim
 
         self.input_proj = nn.Linear(input_size, self.d_model)
         self.pos_enc = nn.Parameter(torch.zeros(1, sequence_length, self.d_model))
@@ -43,7 +41,7 @@ class Transformer_LTE(nn.Module):
                 ("fc_out", nn.Linear(self.d_model, output_size, bias=False))
             ]))
 
-        self._init_weights()
+        # self._init_weights()
 
     def _init_weights(self):
         """Proper weight initialization for better gradient flow"""
@@ -57,32 +55,41 @@ class Transformer_LTE(nn.Module):
                 nn.init.normal_(m.weight, mean=0.0, std=0.02)
 
     def forward(self, x, mask):
-        x = x.float()
-        mask = mask.float()
-
+        """
+        x: (B, L, 3) -> hold, flight, key
+        mask: (B, L) -> 1 for valid, 0 for padding
+        """
+        x, mask = x.float(), mask.float()
         hold, flight, keys = x.unbind(dim=-1)
         keys = keys.long()
-        encoded_x = [
-            self.time_encoders["hold"](hold),
-            self.time_encoders["flight"](flight),
-            self.key_embedding(keys)  # key
-        ]
-        encoded_x = torch.cat(encoded_x, dim=-1)  # (B, L, input_size)
 
-        encoded_x = self.input_proj(encoded_x)  # (B, L, d_model)
+        # 1. Fourier encoding
+        # ----------------------------
+        time_vec = torch.stack([hold, flight], dim=-1)  # (B, L, 3)
+        time_feat = self.time_encoders(time_vec)  # (B, L, 2D)
+        # ----------------------------
+        # 2. Key embedding
+        # ----------------------------
+        key_feat = self.key_embedding(keys)  # (B, L, K)
+        # ----------------------------
+        # 3. Combine and project
+        # ----------------------------
+        encoded_x = self.input_proj(torch.cat([time_feat, key_feat], dim=-1))
         encoded_x = encoded_x + self.pos_enc[:, :encoded_x.size(1), :]
+        # ----------------------------
+        # 4. Transformer
+        # ----------------------------
+        embedding = self.transformer(encoded_x)
+        # ----------------------------
+        # 5. Masked mean pooling
+        # ----------------------------
+        valid = mask.unsqueeze(-1)
+        embedding = (embedding * valid).sum(dim=1) / (valid.sum(dim=1) + 1e-8)
 
-        key_padding_mask = (mask == 0)  # (B, L), True for positions to ignore
-
-        features = self.transformer(encoded_x, src_key_padding_mask=key_padding_mask)  # (B, L, d_model)
-
-        # Masked mean pooling
-        valid = mask.unsqueeze(-1)  # (B, L, 1)
-        denom = valid.sum(dim=1, keepdim=True) + 1e-8  # (B, 1, 1)
-        embedding = (features * valid).sum(dim=1) / denom.squeeze(-1)  # (B, d_model)
-
+        # ----------------------------
+        # 6. Optional projection + normalize
+        # ----------------------------
         if self.use_projector:
             embedding = self.projector(embedding)
 
-        embedding = norm_embeddings(embedding)
-        return embedding
+        return norm_embeddings(embedding)

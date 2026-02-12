@@ -266,7 +266,7 @@ def run_experiment(file_path: str):
     small_loader = dm.val_dataloader()
 
     # print((x1[0], x2[0]), labels[0], (u1[0], u2[0]))
-    ckpt_path = "Keystroke-XAI/20251227_0330/checkpoints/mobile-769-1.49.ckpt"
+    ckpt_path = "Keystroke-XAI/20260130_1234/checkpoints/mobile-651-1.50.ckpt"
 
     nn_model = Transformer_LTE(periods_dict=dm.init_periods, use_projector=conf.use_projector)
     loaded_model = KeystrokeLitModel.load_from_checkpoint(
@@ -322,8 +322,6 @@ def run_experiment(file_path: str):
     # compare_two_users(x1[id1], mask1[id1], u1[id1], x2[id2], mask2[id2], u2[id2], distance)
     # print(distance)
     # print(labels[id1])
-
-
 
 if __name__ == "__main__":
     file_path = f'data/{conf.scenario}/{conf.scenario}_dev_set.npy'

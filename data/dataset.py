@@ -4,9 +4,16 @@ import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
 import conf
-from data.preprocessing import (get_session_fixed_length, augment_session, compute_feature_quantiles,
-                                compute_init_periods, extract_features_classic, get_session_fixed_length_zero_pad_with_mask)
+from data.preprocessing import (augment_session, compute_feature_quantiles,
+                                extract_features_classic, get_session_fixed_length_zero_pad_with_mask)
 import numpy as np
+
+from typing import Dict, List, Tuple, Optional, Any
+import torch
+
+SessionData = np.ndarray
+UserSessionDict = Dict[Any, Dict[Any, SessionData]]
+UserPairs = List[Tuple[Any, Any, Any, Any, Tuple]]
 
 class KeystrokeDataModule(pl.LightningDataModule):
     def __init__(
@@ -25,7 +32,8 @@ class KeystrokeDataModule(pl.LightningDataModule):
         train_val_division: float = 0.8,
         augment: bool = True,
         seed: int = 42,
-        min_session_length: int = 5
+        min_session_length: int = 5,
+        min_sessions_per_user: int = 2
     ):
         super().__init__()
         self.raw_data = raw_data
@@ -52,30 +60,50 @@ class KeystrokeDataModule(pl.LightningDataModule):
         self.ds_test = None
         self.ds_predict = None
         self.min_session_length = min_session_length
+        self.min_sessions_per_user = min_sessions_per_user
 
     @staticmethod
-    def _filter_data(data, min_session_length=5, min_len_sessions=4) -> dict:
-        # Drop sessions with <5 samples and users with <2 sessions
-        to_delete = []
-        for user_key, sessions in data.items():
-            for sess_key, sess in sessions.items():
-                if len(sess) < min_session_length:
-                    to_delete.append((user_key, sess_key))
-        for user_key, sess_key in to_delete:
-            del data[user_key][sess_key]
+    def _filter_data(
+            data: UserSessionDict,
+            min_session_length: int,
+            min_sessions_per_user: int = 4
+    ) -> UserSessionDict:
+        """
+        Filter out:
+        1. Sessions shorter than min_session_length
+        2. Users with fewer than min_sessions_per_user sessions
 
-        to_delete_users = []
-        for user_key, sessions in data.items():
-            if len(sessions) < min_len_sessions:
-                to_delete_users.append(user_key)
-        for user_key in to_delete_users:
-            del data[user_key]
-        return data
+        Args:
+            data: Nested dict {user_id: {session_id: session_data}}
+            min_session_length: Minimum keystrokes per session
+            min_sessions_per_user: Minimum sessions per user
+
+        Returns:
+            Filtered data dictionary
+        """
+        # Deep copy to avoid modifying original
+        filtered = {u: dict(sessions) for u, sessions in data.items()}
+
+        # Remove short sessions
+        for user_id in list(filtered.keys()):
+            sessions = filtered[user_id]
+            filtered[user_id] = {
+                sid: sess for sid, sess in sessions.items()
+                if len(sess) >= min_session_length
+            }
+
+        # Remove users with too few sessions
+        filtered = {
+            user_id: sessions for user_id, sessions in filtered.items()
+            if len(sessions) >= min_sessions_per_user
+        }
+
+        return filtered
 
     def setup(self, stage: str|None = None) -> None:
         if stage in ("fit", None):
             # Split by users
-            self.data = self._filter_data(self.raw_data, self.min_session_length)
+            self.data = self._filter_data(self.raw_data, self.min_session_length, self.min_sessions_per_user)
             users = list(self.data.keys())
             random.Random(self.seed).shuffle(users)
 
@@ -96,8 +124,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
             # self.test_data = {u: data[u] for u in self._test_users}
 
             self.val_shared_pairs = build_cross_user_sequence_pairs(self.val_data)
-            min_max = compute_feature_quantiles(self.train_data)
-            self.init_periods = compute_init_periods(min_max, conf.N_PERIODS)
+            self.min_max = compute_feature_quantiles(self.train_data)
 
             self.ds_train = PrepareData(
                 self.train_data,
@@ -205,7 +232,8 @@ class PrepareData:
             (session_1, mask_1),
             (session_2, mask_2),
             label,
-            (user_idx_1, user_idx_2),
+            (user_key_1, user_key_2),
+            (torch.tensor(user_idx_1), torch.tensor(user_idx_2)) #(user_key_1, user_key_2),
         )
 
     def __len__(self):
@@ -291,11 +319,13 @@ class SameSequenceContrastiveData:
 
         label = 1  # SAME SEQUENCE, DIFFERENT USER
 
+        # In SameSequenceContrastiveData.__getitem__:
         return (
             (session_1, mask_1),
             (session_2, mask_2),
             label,
-            (self.user_to_idx[u1], self.user_to_idx[u2]),
+            (u1, u2),
+            (torch.tensor(self.user_to_idx[u1]), torch.tensor(self.user_to_idx[u2])),  # Numeric indices for loss
         )
 
     def _load(self, user_id, session_id):
@@ -343,3 +373,4 @@ def build_cross_user_sequence_pairs(data, key_col=2, min_unique_keys=5):
                     pairs.append((u1, sid1, u2, sid2, seq))
 
     return pairs
+

@@ -9,7 +9,7 @@ import conf
 
 
 class KeystrokeLitModel(pl.LightningModule):
-    def __init__(self, model: torch.nn.Module, lr: float = 1e-2):
+    def __init__(self, model: torch.nn.Module, lr: float = 1e-3):
         super().__init__()
         self.model = model
         self.supcon = SupConLoss()
@@ -28,7 +28,7 @@ class KeystrokeLitModel(pl.LightningModule):
         """
         batch = ((x1_features, x1_keys), (x2_features, x2_keys)), labels, (u1, u2)
         """
-        (x1, mask1), (x2, mask2), labels, (u1, u2) = batch
+        (x1, mask1), (x2, mask2), labels, (_, _), (u1, u2) = batch
 
         z1 = self(x1, mask1)
         z2 = self(x2, mask2)

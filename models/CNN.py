@@ -1,13 +1,22 @@
 import torch
 import torch.nn as nn
 import conf
-from models.LTE import LTEOrig, create_lte_sequential
+from models.LTE import LearnableFourierFeatures
 import torch.nn.functional as F
 from collections import OrderedDict
+
+import torch
+import torch.nn as nn
+import conf
+from models.LTE import LearnableFourierFeatures
+import torch.nn.functional as F
+from collections import OrderedDict
+
 
 def norm_embeddings(embeddings):
     # return embeddings / torch.sqrt((embeddings ** 2).sum(dim=-1, keepdims=True))
     return F.normalize(embeddings, dim=-1, p=2)
+
 
 def conv_prelu(in_channels: int, out_channels: int, kernel_size: int = 3, padding: int = 1) -> nn.Sequential:
     return nn.Sequential(OrderedDict([
@@ -16,19 +25,20 @@ def conv_prelu(in_channels: int, out_channels: int, kernel_size: int = 3, paddin
         ('PReLU', nn.PReLU(out_channels))
     ]))
 
+
 class ParallelSum(nn.Module):
     """Apply several modules to the same input and sum the outputs with learnable weights."""
+
     def __init__(self, *modules: nn.Module):
         super().__init__()
         self.modules_list = nn.ModuleList(modules)
         # Learnable weights for each path to improve gradient flow
-        # self.path_weights = nn.Parameter(torch.ones(len(modules)))
 
     def forward(self, x: torch.Tensor) -> int:
         # Normalize weights to sum to 1
-        # weights = F.softmax(self.path_weights, dim=0)
+
         return sum(m(x) for m in self.modules_list)
-        # return sum(w * m(x) for w, m in zip(weights, self.modules_list))
+
 
 def residual_block(channels: int, downsample: bool = False) -> nn.Sequential:
     """
@@ -42,23 +52,27 @@ def residual_block(channels: int, downsample: bool = False) -> nn.Sequential:
 
     return nn.Sequential(
         ParallelSum(
-            nn.Sequential(conv_prelu(channels, channels), pool_layer,),
+            nn.Sequential(conv_prelu(channels, channels), pool_layer, ),
             skip_layer
         ),
         nn.PReLU(channels)
     )
 
+
 class CNN_LTE(nn.Module):
     def __init__(self, periods_dict, output_size=512, hidden_size=128,
                  sequence_length=128, vocab_size=256, key_emb_dim=16, use_projector=False):
         super().__init__()
-        self.time_encoders = nn.ModuleDict()
         self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
         self.use_projector = use_projector
-        for feat, periods in periods_dict.items():
-            self.time_encoders[feat] = LTEOrig(init_periods=periods)
+        self.sequence_length = sequence_length
 
-        input_size = sum(encoder.d_out for encoder in self.time_encoders.values()) + key_emb_dim
+        # Updated: Single time encoder instead of ModuleDict
+        self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=conf.N_PERIODS)
+
+        # Updated: Simplified input_size calculation
+        input_size = self.time_encoders.d_out + key_emb_dim
+
         # Calculate flattened dimension after downsampling (3 pooling layers = 2^3 = 8x reduction)
         # flat_dim = (hidden_size * 2) * (sequence_length // 16)
         flat_dim = hidden_size * 2
@@ -87,7 +101,9 @@ class CNN_LTE(nn.Module):
                 ("drop", nn.Dropout(p=0.2)),
                 ("fc_out", nn.Linear(flat_dim, output_size, bias=False))
             ]))
-        self._init_weights()
+
+        # Commented out to match Transformer pattern
+        # self._init_weights()
 
     def _init_weights(self):
         """Proper weight initialization for better gradient flow"""
@@ -101,22 +117,38 @@ class CNN_LTE(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x, mask):
-        x = x.float()
-        mask = mask.float()
-
+        """
+        x: (B, L, 3) -> hold, flight, key
+        mask: (B, L) -> 1 for valid, 0 for padding
+        """
+        x, mask = x.float(), mask.float()
         hold, flight, keys = x.unbind(dim=-1)
         keys = keys.long()
-        encoded_x = [
-            self.time_encoders["hold"](hold),
-            self.time_encoders["flight"](flight),
-            self.key_embedding(keys)  # key
-        ]
-        encoded_x = torch.cat(encoded_x, dim=-1)  # (B, L, C)
+
+        # ----------------------------
+        # 1. Fourier encoding (Updated to match Transformer)
+        # ----------------------------
+        time_vec = torch.stack([hold, flight], dim=-1)  # (B, L, 2)
+        time_feat = self.time_encoders(time_vec)  # (B, L, 2D)
+
+        # ----------------------------
+        # 2. Key embedding
+        # ----------------------------
+        key_feat = self.key_embedding(keys)  # (B, L, K)
+
+        # ----------------------------
+        # 3. Combine features
+        # ----------------------------
+        encoded_x = torch.cat([time_feat, key_feat], dim=-1)  # (B, L, C)
+
         # Apply mask here to zero padded positions BEFORE the backbone
         # encoded_x = encoded_x * mask.unsqueeze(-1)
 
+        # ----------------------------
+        # 4. CNN Backbone
+        # ----------------------------
         encoded_x = encoded_x.transpose(1, 2)  # (B, C, L)
-        features = self.backbone(encoded_x) # (B, C, L')
+        features = self.backbone(encoded_x)  # (B, flat_dim)
 
         # Using avg_pool to get proportional weights
         # ds_factor = encoded_x.shape[-1] // features.shape[-1]
@@ -130,9 +162,14 @@ class CNN_LTE(nn.Module):
         # denom = mask_ds.sum(dim=-1, keepdim=True) + 1e-8  # Avoid div by zero, (B, 1)
         # features = features.sum(dim=-1) / denom  # (B, C')
 
+        # ----------------------------
+        # 5. Optional projection
+        # ----------------------------
         embedding = features
         if self.use_projector:
             embedding = self.projector(features)
 
-        embedding = norm_embeddings(embedding)
-        return embedding
+        # ----------------------------
+        # 6. Normalize
+        # ----------------------------
+        return norm_embeddings(embedding)

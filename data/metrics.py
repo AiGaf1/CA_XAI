@@ -3,7 +3,6 @@ import numpy as np
 from sklearn.metrics import roc_curve
 from models.CNN import norm_embeddings
 
-
 def compute_eer(pred1, pred2, labels):
     if torch.isnan(pred1).any() or torch.isinf(pred2).any():
         print("Warning: NaN or Inf detected in z1 — replacing with 0")

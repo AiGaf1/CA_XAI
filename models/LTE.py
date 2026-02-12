@@ -2,76 +2,54 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 import torch.fft as fft
+import math
 
-class LTEOrig(nn.Module):
-    def __init__(self, init_periods):
-        super().__init__()
-
-        init_periods = init_periods.detach().clone().to(torch.float32)
-        init_freqs = 2 * torch.pi / init_periods
-        self.register_buffer("freqs", init_freqs)
-
-        self.scales_raw = nn.Parameter(torch.ones_like(init_periods))
-        # self.phases = nn.Parameter(torch.zeros_like(init_periods))
-        self.d_out = 2 * len(init_periods)
-
-    def forward(self, t):
+class LearnableFourierFeatures(nn.Module):
+    def __init__(self, feature_dict: dict, num_features: int):
         """
-        t: (Batch, Sequence Length) time values in seconds of each feature
-        returns: (B, S, 2*n_freqs)
+        feature_dict: dict where key=feature_name, value={"min": float, "max": float}
+        num_features: number of Fourier frequencies per feature
         """
-        # angles = t[..., None] * freqs  + self.phases        # (B, S, n_freqs)
-        angles = t[..., None] * self.freqs
-
-        sin_part = angles.sin()
-        cos_part = angles.cos()
-        enc = torch.cat([sin_part, cos_part], dim=-1)
-        sigmoid_module = nn.Sigmoid()
-        scales = sigmoid_module(self.scales_raw)
-        scales = scales.repeat(1, 2) #we repeat scales 2 times for sin and cos
-        return enc * scales
-
-class MultiplyFreqs(nn.Module):
-    def __init__(self, freqs):
-        super().__init__()
-        self.register_buffer("freqs", freqs)
-
-    def forward(self, t):
-        return t[..., None] * self.freqs
-
-class SinCos(nn.Module):
-    def __init__(self):
         super().__init__()
 
-    def forward(self, angles):
-        sin_part = angles.sin()
-        cos_part = angles.cos()
-        return torch.cat([sin_part, cos_part], dim=-1)
+        self.feature_names = list(feature_dict.keys())
+        self.num_features = num_features
+        self.input_dim = len(self.feature_names)
 
-class ScaledSigmoid(nn.Module):
-    def __init__(self, num_freqs):
-        super().__init__()
-        self.scales_raw = nn.Parameter(torch.ones(num_freqs))
-        self.sigmoid_module = nn.Sigmoid()
+        # Initialize a frequency matrix (M x D)
+        period_list = []
+        for feat in self.feature_names:
+            min_f, max_f = feature_dict[feat]["min"], feature_dict[feat]["max"]
+            period = torch.logspace(math.log10(min_f), math.log10(max_f), steps=num_features)
+            period_list.append(period)
+        period_init = torch.stack(period_list, dim=0)  # (M, D)
 
-    def forward(self, enc):
-        scales = self.sigmoid_module(self.scales_raw)
-        scales = scales.repeat(1, 2)
-        return enc * scales
+        freq = 2 * torch.pi / period_init
+        self.register_buffer("freq", freq)
 
-# To create the equivalent nn.Sequential, assuming init_periods is provided
-def create_lte_sequential(init_periods):
-    init_periods = init_periods.detach().clone().to(torch.float32)
-    init_freqs = 2 * torch.pi / init_periods
-    num_freqs = len(init_periods)
+        # learnable amplitude
+        self.scales_raw = nn.Parameter(
+            torch.zeros(self.input_dim, self.num_features)  # (M, D)
+        )
 
-    model = nn.Sequential(
-        MultiplyFreqs(init_freqs),
-        SinCos(),
-        ScaledSigmoid(num_freqs)
-    )
-    model.d_out = 2 * num_freqs  # Attach d_out as an attribute for compatibility
-    return model
+        self.d_out = 2 * self.input_dim * num_features
+
+    def forward(self, x):
+        """
+        x: (B, L, M)
+        return: (B, L, M*2*D)
+        """
+
+        x = x.unsqueeze(-1)                     # (B, L, M, 1)
+        scales = torch.sigmoid(self.scales_raw) # bounded (0,1)
+        proj = x * self.freq * scales          # (B, L, M, D)
+        fourier = torch.stack(
+            [proj.sin(), proj.cos()],
+            dim=-1                              # (B, L, M, D, 2)
+        )
+
+        return fourier.flatten(start_dim=-3)
+
 
 
 class SpectralConv1d(nn.Module):
