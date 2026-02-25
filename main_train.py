@@ -1,65 +1,101 @@
-from dotenv import load_dotenv
+# 1. Standard Library
 import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+os.environ['TORCH_USE_CUDA_DSA'] = '1'
+# 2. Third-Party Libraries
 import numpy as np
-
-import wandb
-import torch
 import pytorch_lightning as pl
+import wandb
+from dotenv import load_dotenv
 from pytorch_lightning.loggers import WandbLogger
-import matplotlib.pyplot as plt
-import math
-import seaborn as sns
+from pytorch_metric_learning import losses, distances
 from torch import nn
-
-from data.dataset import KeystrokeDataModule
-from utils.tools import setup_logger
-from models.Litmodel import KeystrokeLitModel
-from utils.callbacks import create_callbacks
-from models.CNN import CNN_LTE, norm_embeddings
-from models.transformer import Transformer_LTE
-from models.LTE import  LearnableFourierFeatures
-from utils.tools import export_to_onnx, setup_wandb_logging, save_predictions, load_comparisons
+# 3. Local Modules (Project Specific)
 import conf
+from data.Aalto.dataset import KeystrokeDataModule
+from models.Litmodel import KeystrokeLitModel
+from models.transformer import Transformer_LTE
+from utils.callbacks import create_callbacks
+from utils.tools import (
+    export_to_onnx,
+    setup_logger,
+    setup_wandb_logging
+)
 
 logger = setup_logger("main")
 
-def initialize_environment() -> None:
-    """Initialize training environment with reproducibility settings."""
-    pl.seed_everything(conf.seed, workers=True, verbose=False)
-    load_dotenv()
-    wandb.login(key=os.getenv("WAND_API_KEY"))
-    torch.set_float32_matmul_precision('high')
+from pytorch_metric_learning.miners import BatchHardMiner
 
-    logger.info(f"Environment initialized with seed: {conf.seed}")
+from pytorch_metric_learning.reducers import BaseReducer
+import torch
+
+
+class PositiveOnlyReducer(BaseReducer):
+    def element_reduction(self, losses, *args, **kwargs):
+        return torch.sum(losses[losses > 0])
+
+    def triplet_reduction(self, losses, loss_indices, embeddings, labels, **kwargs):
+        positive_mask = losses > 0
+        if positive_mask.sum() == 0:
+            return torch.tensor(0.0, device=losses.device, dtype=losses.dtype)
+        return torch.sum(losses[positive_mask])
+
+class TripletLoss(nn.Module):
+    def __init__(self, margin=0.25):
+        super().__init__()
+        self.loss_fn = losses.TripletMarginLoss(
+            margin=margin,
+            distance=distances.CosineSimilarity(),
+            reducer=PositiveOnlyReducer(),  # ← Your custom reducer!
+            swap=True
+        )
+    def forward(self, embeddings, labels):
+        return self.loss_fn(embeddings, labels)
+
+def initialize_environment(config: conf.ExperimentConfig) -> None:
+    """Initialize training environment with reproducibility and hardware optimization."""
+    pl.seed_everything(config.seed, workers=True, verbose=False)
+    load_dotenv()
+
+    api_key = os.getenv("WANDB_API_KEY")  # Fixed typo from "WAND_API_KEY"
+    if api_key:
+        wandb.login(key=api_key)
+    else:
+        logger.warning("WANDB_API_KEY not found in environment variables.")
+
+    # Optimize for modern GPUs (Ampere and later)
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision('high')
+
+    logger.info(
+        f"Environment initialized | Seed: {config.seed} | Device: {'GPU' if torch.cuda.is_available() else 'CPU'}")
 
 def create_data_module(
         file_path: str,
         predict_file_path: str = None,
         min_session_length: int = 5,
-        sequence_length: int = conf.sequence_length,
+        windows_size: int = 32,
         min_sessions_per_user: int = 2
 ) -> KeystrokeDataModule:
     """Create and setup the data module for training and prediction."""
-    logger.info("Loading data...")
+    logger.info(f"Loading data from {file_path}")
     raw_data = np.load(file_path, allow_pickle=True).item()
 
     dm = KeystrokeDataModule(
         raw_data=raw_data,
         predict_file_path=predict_file_path,
-        sequence_length=sequence_length, # conf.sequence_length, min_session_length
+        window_size=windows_size, # conf.window_size, min_session_length
         samples_per_batch_train=conf.samples_per_batch_train,
         samples_per_batch_val=conf.samples_per_batch_val,
         batches_per_epoch_train=conf.batches_per_epoch_train,
         batches_per_epoch_val=conf.batches_per_epoch_val,
         train_val_division=conf.train_val_division,
-        augment=True,
-        seed=conf.seed,
+        augment=False,
+        seed=42,
         min_session_length=min_session_length,
         min_sessions_per_user=min_sessions_per_user
     )
     dm.setup(None)
-
-    logger.info(f"Data module created with {dm.num_train_users} training users")
     return dm
 
 def create_trainer(
@@ -86,7 +122,6 @@ def create_trainer(
 def run_predictions(
         trainer: pl.Trainer,
         model: KeystrokeLitModel,
-        datamodule: KeystrokeDataModule,
         checkpoint_path: str = "best"
 ) -> dict[str, torch.Tensor]:
     """Run predictions and collect embeddings."""
@@ -106,123 +141,35 @@ def run_predictions(
     logger.info(f"Collected {len(embeddings)} session embeddings")
     return embeddings
 
+def run_experiment(config: conf.ExperimentConfig) -> None:
+    initialize_environment(config)
 
-def visualize_activations(net, datamodule, color="C0"):
-    """
-    Visualize activations throughout the network by registering forward hooks.
-    Adapted from the PyTorch Lightning UvA Deep Learning course.
-    """
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    net = net.to(device)
-    net.eval()
-    activations = {}
-    # Hook function to capture activations
-    def hook_fn(name):
-        def hook(module, input, output):
-            activations[name] = output.detach()
-        return hook
+    # 1. Data & Model Setup
+    dm = create_data_module(config.file_path, config.predict_file_path, min_session_length=config.min_session_length,
+                            windows_size=config.window_size, min_sessions_per_user=config.min_sessions_per_user)
 
-    # Register hooks for layers with parameters or specific activation types
-    hooks = []
-    for name, module in net.named_modules():
-        if hasattr(module, 'weight') or isinstance(module, (nn.ReLU, nn.LeakyReLU, nn.Tanh,
-                                                            nn.Sigmoid, nn.GELU, nn.BatchNorm1d,
-                                                            nn.BatchNorm2d, nn.LayerNorm, LearnableFourierFeatures)):
-            hooks.append(module.register_forward_hook(hook_fn(name)))
+    # loss_fn = SupConLoss()
+    loss_fn = TripletLoss()
+    # nn_model = CNN_LTE(periods_dict=dm.min_max, use_projector=conf.use_projector,
+    #                            sequence_length=conf.sequence_length)
+    nn_model = Transformer_LTE(periods_dict=dm.min_max)
+    nn_model = torch.compile(nn_model, mode='default')
+    lit_model = KeystrokeLitModel(nn_model, loss_fn)
 
-    # Get a batch of data and run forward pass
-    small_loader = datamodule.train_dataloader()
-    (x1, x2), labels, (u1, u2) = next(iter(small_loader))
-
-    with torch.no_grad():
-        _ = net(x1.float().to(device))
-
-    # Remove hooks
-    for hook in hooks:
-        hook.remove()
-
-    # Process activations for plotting
-    processed_activations = {name: activation.view(-1).cpu().numpy()
-                            for name, activation in activations.items()}
-
-    # Create subplot grid
-    columns = 3
-    rows = math.ceil(len(processed_activations) / columns)
-    fig, axes = plt.subplots(rows, columns, figsize=(columns * 4, rows * 3))
-    axes = np.atleast_2d(axes)
-
-    # Plot each layer's activations
-    for idx, (name, activation_np) in enumerate(processed_activations.items()):
-        row, col = idx // columns, idx % columns
-        ax = axes[row, col]
-
-        sns.histplot(data=activation_np, bins=50, ax=ax, color=color, kde=True, stat="density")
-        ax.axvline(x=0, color='r', linestyle='--', alpha=0.3)
-
-        display_name = name.replace('model.', '')
-        module_type = type(dict(net.named_modules())[name]).__name__
-        ax.set_title(f"{display_name}\n({module_type})", fontsize=10)
-
-        stats_text = f"μ={activation_np.mean():.2f}, σ={activation_np.std():.2f}"
-        ax.text(0.05, 0.95, stats_text, transform=ax.transAxes,
-                verticalalignment='top', fontsize=8)
-
-    # Turn off unused subplots
-    for idx in range(len(processed_activations), rows * columns):
-        row, col = idx // columns, idx % columns
-        axes[row, col].axis('off')
-
-    fig.suptitle("Activation distributions", fontsize=14)
-    fig.tight_layout()
-    plt.subplots_adjust(top=0.9, hspace=0.4, wspace=0.3)
-    plt.savefig("activations_visualization.png", dpi=300, bbox_inches='tight')
-    plt.show()
-    plt.close()
-
-    return processed_activations
-
-def compute_distances4comps(embeddings, comps, metric="euclidean"):
-    distances = {}
-    for comp in comps:
-        e1, e2 = norm_embeddings(embeddings[comp[0]]), norm_embeddings(embeddings[comp[1]])
-        distance = compute_distance(e1, e2, metric)
-        distances[str(comp)] = distance
-    return distances
-
-def compute_distance(e1, e2, metric):
-    if metric == "euclidean":
-        distance = nn.functional.pairwise_distance(e1, e2).item()
-    elif metric == "cosine":
-        distance = nn.functional.cosine_similarity(e1, e2).item()
-    else:
-        raise ValueError(f"Unknown metric {metric}")
-    return distance
-
-def normalize_distances(distances):
-    """
-    Convert distances to similarity in [0, 1]
-    """
-    distances_list = torch.tensor(list(distances.values()), dtype=torch.float32)
-    max_dist = distances_list.max()
-    similarities = 1 - distances_list / max_dist
-    return similarities.tolist()
-
-def run_experiment(file_path: str, predict_file_path: str):
-
-    initialize_environment()
-    # Setup data and model
-    dm = create_data_module(file_path, predict_file_path)
-    nn_model = Transformer_LTE(periods_dict=dm.min_max, use_projector=conf.use_projector,
-                               sequence_length=conf.sequence_length)
-    # Setup training
-    wandb_logger, version = setup_wandb_logging(use_projector=conf.use_projector)
-    callbacks = create_callbacks(conf.scenario)
+    # 3. Training Infrastructure
+    wandb_logger, version = setup_wandb_logging(config=config, model_name=nn_model.__class__.__name__)
+    callbacks = create_callbacks(config.scenario)
     trainer = create_trainer(wandb_logger, callbacks)
 
-    lit_model = KeystrokeLitModel(nn_model, lr=1e-3)
+    # 4. Execution
     trainer.fit(lit_model, datamodule=dm)
-    best_model_path = trainer.checkpoint_callback.best_model_path
-    print(f"Best model path: {best_model_path}")
+
+    # 5. Post-Training: Exporting the BEST model
+    checkpoint_cb = callbacks[0]
+    best_model_path = checkpoint_cb.best_model_path
+    logger.info(f"Loading best model for export: {best_model_path}")
+    export_to_onnx(config, best_model_path, wandb_logger, nn_model)
+    wandb.finish()
 
     # # Run predictions
     # ckpt_path = "Keystroke-XAI/20251227_0330/checkpoints/mobile-769-1.49.ckpt"
@@ -234,19 +181,8 @@ def run_experiment(file_path: str, predict_file_path: str):
     # #
     # # save_predictions(similarities, conf.scenario, logger)
     #
-    checkpoint_cb = callbacks[0]
-    best_model_path = checkpoint_cb.best_model_path
-    print(f"Best model path: {best_model_path}")
-    export_to_onnx(best_model_path, wandb_logger, nn_model)
-    wandb.finish()
     # # visualize_activations(nn_model, dm)
 
 if __name__ == "__main__":
-    file_path = f'data/{conf.scenario}/{conf.scenario}_dev_set.npy'
-    predict_file_path = f'data/{conf.scenario}/{conf.scenario}_test_sessions.npy'
-
-    # n_periods = [4, 8, 16, 32, 64]
-    #
-    # for i in n_periods:
-    conf.N_PERIODS = 64
-    run_experiment(file_path, predict_file_path)
+    config = conf.ExperimentConfig(name='test', scenario='desktop')
+    run_experiment(config)

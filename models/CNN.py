@@ -5,13 +5,6 @@ from models.LTE import LearnableFourierFeatures
 import torch.nn.functional as F
 from collections import OrderedDict
 
-import torch
-import torch.nn as nn
-import conf
-from models.LTE import LearnableFourierFeatures
-import torch.nn.functional as F
-from collections import OrderedDict
-
 
 def norm_embeddings(embeddings):
     # return embeddings / torch.sqrt((embeddings ** 2).sum(dim=-1, keepdims=True))
@@ -27,7 +20,7 @@ def conv_prelu(in_channels: int, out_channels: int, kernel_size: int = 3, paddin
 
 
 class ParallelSum(nn.Module):
-    """Apply several modules to the same input and sum the outputs with learnable weights."""
+    """Apply several modules to the same input and sum the outputs."""
 
     def __init__(self, *modules: nn.Module):
         super().__init__()
@@ -63,12 +56,13 @@ class CNN_LTE(nn.Module):
     def __init__(self, periods_dict, output_size=512, hidden_size=128,
                  sequence_length=128, vocab_size=256, key_emb_dim=16, use_projector=False):
         super().__init__()
-        self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
         self.use_projector = use_projector
         self.sequence_length = sequence_length
+        self.hidden_size = hidden_size
+        self.output_size = output_size
 
-        # Updated: Single time encoder instead of ModuleDict
         self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=conf.N_PERIODS)
+        self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
 
         # Updated: Simplified input_size calculation
         input_size = self.time_encoders.d_out + key_emb_dim
@@ -173,3 +167,7 @@ class CNN_LTE(nn.Module):
         # 6. Normalize
         # ----------------------------
         return norm_embeddings(embedding)
+
+    def get_embedding_dim(self) -> int:
+        """Return the dimension of output embeddings."""
+        return self.output_size if self.use_projector else self.hidden_size * 2

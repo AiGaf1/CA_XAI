@@ -1,18 +1,26 @@
-from pytorch_metric_learning.losses import SupConLoss
 import torch
+from pytorch_metric_learning.miners import BaseMiner
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 import pytorch_lightning as pl
-from typing import Any, Dict, Tuple
-from data.metrics import compute_eer
 from pytorch_lightning.loggers import WandbLogger
-import conf
+
+from data.Aalto.metrics import compute_eer
+from typing import Any, Dict, Tuple, Optional
 
 
 class KeystrokeLitModel(pl.LightningModule):
-    def __init__(self, model: torch.nn.Module, lr: float = 1e-3):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        loss_fn: Optional[torch.nn.Module],
+        t_0: float = 2500,
+        lr: float = 1e-3,
+        miner: Optional[BaseMiner] = None,
+    ):
         super().__init__()
         self.model = model
-        self.supcon = SupConLoss()
+        self.loss_fn = loss_fn
+        self.miner = miner
 
         for name, module in self.named_modules():
             module.name = name
@@ -30,22 +38,22 @@ class KeystrokeLitModel(pl.LightningModule):
         """
         (x1, mask1), (x2, mask2), labels, (_, _), (u1, u2) = batch
 
-        z1 = self(x1, mask1)
-        z2 = self(x2, mask2)
+        z1 = self.model(x1, mask1)
+        z2 = self.model(x2, mask2)
 
-        embeddings  = torch.cat([z1, z2], dim=0)
+        embeddings = torch.cat([z1, z2], dim=0)
         user_idx = torch.cat([u1, u2], dim=0)
 
-        supcon_loss = self.supcon(embeddings, user_idx)
+        loss = self.loss_fn(embeddings, user_idx)
 
         with torch.inference_mode():
             eer = compute_eer(z1.detach().float().cpu(), z2.detach().float().cpu(), labels.detach().float().cpu())
 
         # Logging
-        self.log(f"{stage}/supcon_loss", supcon_loss, prog_bar=True, on_epoch=True, on_step=False)
+        self.log(f"{stage}/loss", loss, prog_bar=True, on_epoch=True, on_step=False)
         self.log(f"{stage}/eer", eer, prog_bar=True, on_epoch=True, on_step=False)
 
-        return supcon_loss
+        return loss
 
     def training_step(self, batch, batch_idx):
         return self._step_common(batch, "train")
@@ -78,14 +86,22 @@ class KeystrokeLitModel(pl.LightningModule):
                                          log_freq=100, log_graph=True)
 
     def configure_optimizers(self):
-        lr = self.hparams.lr
         optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            self.parameters(),
             lr=self.hparams.lr,
             betas=(0.95, 0.999)
         )
 
-        cosine_scheduler = CosineAnnealingWarmRestarts(optimizer=optimizer, T_0=conf.lr_scheduler_T_max, eta_min=lr/100)
-        return [optimizer], [
-            {"scheduler": cosine_scheduler, "interval": "step", "frequency": 1}
-        ]
+        scheduler = CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=self.hparams.t_0,
+            eta_min=self.hparams.lr / 100
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+            },
+        }

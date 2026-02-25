@@ -14,6 +14,11 @@ def extract_features_classic(session):
         release = session[:, 1].astype(np.float64) / 1000.0
         ascii_f = session[:, 2].astype(int)
 
+        valid_mask = (ascii_f >= 0) & (ascii_f <= 255)
+        press = press[valid_mask]
+        release = release[valid_mask]
+        ascii_f = ascii_f[valid_mask]
+
         hold = release - press
         flight_time = np.zeros_like(press)
         flight_time[1:] = press[1:] - release[:-1]
@@ -32,7 +37,7 @@ def get_session_fixed_length(session, sequence_length, start_zero=True):
         start_idx = 0
     else:
         start_idx = np.random.randint(0, session.shape[0] - 1)
-    # print(tiled.shape, start_idx, sequence_length, tiled[start_idx:start_idx+sequence_length].shape)
+    # print(tiled.shape, start_idx, window_size, tiled[start_idx:start_idx+window_size].shape)
     return tiled[start_idx:start_idx+sequence_length]
 
 def get_session_fixed_length_zero_pad_with_mask(session, sequence_length, start_zero=True):
@@ -135,13 +140,13 @@ def compute_init_periods(min_max_quantile: dict, n_periods: int):
         )
     return init_periods
 
-def compute_feature_quantiles(dataset):
+def compute_feature_min_max(dataset):
     """
     dataset: dictionary {user_id: {session_id: np.ndarray}}
-    extract_features: function to extract numeric features from a session
     Returns: dict with (min, max) per feature
     """
     all_features = []
+
     for user_sessions in dataset.values():
         for session in user_sessions.values():
             feats = extract_features_classic(session)
@@ -150,24 +155,20 @@ def compute_feature_quantiles(dataset):
     all_features = np.vstack(all_features)  # shape: (total_keystrokes, num_features)
     feature_names = ['hold', 'flight']
 
-    # feature_names = ['hold', 'flight']
     clip_dict = {}
     for i, name in enumerate(feature_names):
-        quantile_values = np.quantile(all_features[:, i], [0.01, 0.99])
-        min_val = safe_min_quantile(all_features[:, i])
-        max_val = max(quantile_values[1], min_val + 1e-6)
-        clip_dict[name] = {"min": float(min_val), "max": float(max_val)}
+        min_val = float(np.min(all_features[:, i]))
+        max_val = float(np.max(all_features[:, i]))
 
-        print(f"{name}: 1% = {quantile_values[0]:.4f}, 99% = {quantile_values[1]:.4f}")
+        if min_val <= 0:
+            min_val = 1e-6
+
+        clip_dict[name] = {"min": min_val, "max": max_val}
+
+        print(f"{name}: min = {min_val:.6f}, max = {max_val:.6f}")
+
     return clip_dict
 
-def safe_min_quantile(feature_values, start_q=0.01, step=0.01):
-    q = start_q
-    min_val = np.quantile(feature_values, q)
-    while min_val <= 0 and q < 1.0:
-        q += step
-        min_val = np.quantile(feature_values, q)
-    return min_val
 
 
 

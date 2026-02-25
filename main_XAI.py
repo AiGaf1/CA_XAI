@@ -1,21 +1,16 @@
-import numpy as np
-import wandb
 import torch
-import random
 
-from main_train import create_trainer, run_predictions, compute_distance, create_data_module
-from data.dataset import KeystrokeDataModule
+from main_train import create_data_module
 from utils.tools import setup_logger
-from utils.visualization import visualize_keystrokes, compare_two_users
+from utils.visualization import compare_two_users
 from models.Litmodel import KeystrokeLitModel
 from models.transformer import Transformer_LTE
 import pytorch_lightning as pl
 import conf
 import numpy as np
-import torch.nn.functional as F
-from scipy.ndimage import gaussian_filter1d  # For 1D Gaussian blur
 import matplotlib.pyplot as plt
 from typing import Tuple, List, Dict
+from utils.metrics import compute_distance
 
 logger = setup_logger("main")
 pl.seed_everything(conf.seed, workers=True, verbose=True)

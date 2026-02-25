@@ -3,12 +3,11 @@ import random
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
-import conf
-from data.preprocessing import (augment_session, compute_feature_quantiles,
-                                extract_features_classic, get_session_fixed_length_zero_pad_with_mask)
+from data.Aalto.preprocessing import (augment_session, compute_feature_min_max,
+                                      extract_features_classic, get_session_fixed_length_zero_pad_with_mask)
 import numpy as np
 
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Any
 import torch
 
 SessionData = np.ndarray
@@ -21,7 +20,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
         *,
         raw_data: np.array,
         predict_file_path: str = None,
-        sequence_length: int,
+        window_size: int,
         samples_per_batch_train: int,
         samples_per_batch_val: int,
         batches_per_epoch_train: int,
@@ -30,7 +29,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
         num_workers_val: int = 4,
         persistent_workers: bool = True,
         train_val_division: float = 0.8,
-        augment: bool = True,
+        augment: bool = False,
         seed: int = 42,
         min_session_length: int = 5,
         min_sessions_per_user: int = 2
@@ -38,7 +37,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
         super().__init__()
         self.raw_data = raw_data
         self.predict_file_path = predict_file_path
-        self.sequence_length = sequence_length
+        self.sequence_length = window_size
         self.samples_per_batch_train = samples_per_batch_train
         self.samples_per_batch_val = samples_per_batch_val
         self.batches_per_epoch_train = batches_per_epoch_train
@@ -66,7 +65,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
     def _filter_data(
             data: UserSessionDict,
             min_session_length: int,
-            min_sessions_per_user: int = 4
+            min_sessions_per_user: int
     ) -> UserSessionDict:
         """
         Filter out:
@@ -123,18 +122,18 @@ class KeystrokeDataModule(pl.LightningDataModule):
             self.val_data = {u: self.data[u] for u in self._val_users}
             # self.test_data = {u: data[u] for u in self._test_users}
 
-            self.val_shared_pairs = build_cross_user_sequence_pairs(self.val_data)
-            self.min_max = compute_feature_quantiles(self.train_data)
+            # self.val_shared_pairs = build_cross_user_sequence_pairs(self.val_data)
+            self.min_max = compute_feature_min_max(self.train_data)
 
             self.ds_train = PrepareData(
                 self.train_data,
-                sequence_length=self.sequence_length,
+                window_size=self.sequence_length,
                 samples_considered_per_epoch=self.batches_per_epoch_train * self.samples_per_batch_train,
                 augment=self.augment
             )
             self.ds_val = PrepareData(
                 self.val_data,
-                sequence_length=self.sequence_length,
+                window_size=self.sequence_length,
                 samples_considered_per_epoch=self.batches_per_epoch_val * self.samples_per_batch_val,
                 augment=False,
             )
@@ -149,7 +148,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
             # self.pred_data = np.load(self.predict_file_path, allow_pickle=True).item()
             # self.ds_predict = PreparePredictData(
             #     self.pred_data,
-            #     sequence_length=self.sequence_length,
+            #     window_size=self.window_size,
             # )
             self.ds_predict = self.ds_val
 
@@ -203,10 +202,10 @@ class KeystrokeDataModule(pl.LightningDataModule):
 
 
 class PrepareData:
-    def __init__(self, dataset, sequence_length, samples_considered_per_epoch, augment):
+    def __init__(self, dataset, window_size, samples_considered_per_epoch, augment):
         self.data = dataset
         self.len = samples_considered_per_epoch
-        self.sequence_length = sequence_length
+        self.window_size = window_size
         self.user_keys = list(self.data.keys())
         self.augment = augment
 
@@ -246,7 +245,7 @@ class PrepareData:
             session = augment_session(session)
 
         prep_session = extract_features_classic(session)
-        fix_session, mask = get_session_fixed_length_zero_pad_with_mask(prep_session, self.sequence_length, self.augment)
+        fix_session, mask = get_session_fixed_length_zero_pad_with_mask(prep_session, self.window_size, self.augment)
 
         return fix_session, mask
 
@@ -373,4 +372,3 @@ def build_cross_user_sequence_pairs(data, key_col=2, min_unique_keys=5):
                     pairs.append((u1, sid1, u2, sid2, seq))
 
     return pairs
-

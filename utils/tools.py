@@ -1,15 +1,15 @@
+import os
 import logging
-import torch
-from torch.export import Dim
 
-from models.Litmodel import KeystrokeLitModel
-from models.CNN import CNN_LTE
+from pytorch_metric_learning.losses import SupConLoss, ArcFaceLoss, TripletMarginLoss
 from pytorch_lightning.loggers import WandbLogger
 import wandb
-from pytorch_lightning.callbacks import ModelCheckpoint
-import conf
-import os
 from datetime import datetime
+
+from models.Litmodel import KeystrokeLitModel
+from conf import ExperimentConfig
+from models.CNN import CNN_LTE
+
 
 def setup_logger(name: str = None, level=logging.INFO) -> logging.Logger:
     """Set up and return a logger instance with a consistent format."""
@@ -29,22 +29,23 @@ def setup_logger(name: str = None, level=logging.INFO) -> logging.Logger:
         logger.propagate = False
     return logger
 
-def setup_wandb_logging(use_projector: bool) -> tuple[WandbLogger, str]:
+def setup_wandb_logging(config: ExperimentConfig, model_name: str) -> tuple[WandbLogger, str]:
     """Setup W&B logging with appropriate tags and versioning."""
     tags = [
-        f"scenario_{conf.scenario}",
-        f"embedding_{conf.embedding_size}",
-        f"seqlen_{conf.sequence_length}",
-        f"epochs_{conf.epochs}",
-        f"trigperiods_{conf.N_PERIODS}",
-        f"head_{use_projector}"
+        f"scenario_{config.scenario}",
+        # f"embedding_{config.embedding_size}",
+        f"window_size_{config.window_size}",
+        f"epochs_{config.epochs}",
+        f"trigperiods_{config.n_periods}",
+        f"head_{config.use_projector}",
+        f"model_{model_name}"
     ]
 
     version = datetime.now().strftime("%Y%m%d_%H%M")
-    experiment_name = f'{conf.epochs}_{conf.scenario}'
+    experiment_name = f'{config.epochs}_{config.scenario}'
 
     wandb_logger = WandbLogger(
-        project=conf.project,
+        project=config.name,
         name=experiment_name,
         version=version,
         log_model=True,
@@ -70,10 +71,16 @@ def save_predictions(similarities: list[float], scenario: str, logger) -> None:
         f.write(str(similarities))
     logger.info(f"Predictions saved to {output_file}")
 
-def export_to_onnx(ckpt_path: str, wandb_logger: WandbLogger, model):
+def export_to_onnx(config: ExperimentConfig,ckpt_path: str, wandb_logger: WandbLogger, model):
+    import torch.serialization
+    from pytorch_metric_learning.distances.cosine_similarity import CosineSimilarity
+
+    # Allow the custom class
+    torch.serialization.add_safe_globals([CosineSimilarity, SupConLoss, ArcFaceLoss, TripletMarginLoss])
+
     # After creating your model
-    batch_size = conf.batches_per_epoch_train
-    seq_len = conf.sequence_length
+    batch_size = config.batches_per_epoch_train
+    seq_len = config.window_size
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     dummy_x = torch.cat([

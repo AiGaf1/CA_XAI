@@ -4,13 +4,12 @@ from tqdm import tqdm
 import numpy as np
 import random
 
-from torch import tensor
 import pytorch_lightning as pl
 
 
 from models.CNN import CNN_LTE, norm_embeddings
 from utils.tools import compute_init_periods
-from data.preprocessing import extract_features_classic, get_session_fixed_length, compute_feature_quantiles
+from data.Aalto.preprocessing import extract_features_classic, get_session_fixed_length, compute_feature_quantiles
 # from main.data.preprocessing import get_session_fixed_length, augment_session, compute_feature_quantiles,
 import conf
 
