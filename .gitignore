@@ -1,3 +1,11 @@
+.claude/
+.idea/
+.vscode/
+data/Aalto/raw/
+data/CMU/raw/
+data/HMOG/raw/
+Keystroke-XAI/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
