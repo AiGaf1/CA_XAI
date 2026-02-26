@@ -301,21 +301,3 @@ LOSS_EXPERIMENTS = {
         use_augmentation=True
     ),
 }
-
-#----Project-variables------
-project = "Keystroke-XAI"
-#----Data-Variables------
-train_val_division = 0.80
-#----Loss-Variables------
-batches_per_epoch_train = 256
-batches_per_epoch_val = 16
-samples_per_batch_train = 512
-samples_per_batch_val = 512
-#----Model-Variables------
-N_PERIODS = 64
-window_size = 50
-embedding_size = 128
-use_projector = False
-#----Optimization-Variables------
-lr_scheduler_T_max = 2500
-epochs = 1000

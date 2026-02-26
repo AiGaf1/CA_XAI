@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 from data.Aalto.preprocessing import (augment_session, compute_feature_min_max,
                                       extract_features_classic, get_session_fixed_length_zero_pad_with_mask)
 import numpy as np
+from sklearn.preprocessing import StandardScaler
 
 from typing import Dict, List, Tuple, Any
 import torch
@@ -121,6 +122,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
             self.train_data = {u: self.data[u] for u in self._train_users}
             self.val_data = {u: self.data[u] for u in self._val_users}
             # self.test_data = {u: data[u] for u in self._test_users}
+            self.scaler = self._fit_scaler(self.train_data)
 
             # self.val_shared_pairs = build_cross_user_sequence_pairs(self.val_data)
             self.min_max = compute_feature_min_max(self.train_data)
@@ -129,20 +131,23 @@ class KeystrokeDataModule(pl.LightningDataModule):
                 self.train_data,
                 window_size=self.sequence_length,
                 samples_considered_per_epoch=self.batches_per_epoch_train * self.samples_per_batch_train,
-                augment=self.augment
+                augment=self.augment,
+                scaler=self.scaler
             )
+
             self.ds_val = PrepareData(
                 self.val_data,
                 window_size=self.sequence_length,
                 samples_considered_per_epoch=self.batches_per_epoch_val * self.samples_per_batch_val,
                 augment=False,
+                scaler=self.scaler
             )
-            self.ds_val_same_seq = SameSequenceContrastiveData(
-                self.val_data,
-                self.val_shared_pairs,
-                sequence_length=self.sequence_length,
-                augment=False
-            )
+            # self.ds_val_same_seq = SameSequenceContrastiveData(
+            #     self.val_data,
+            #     self.val_shared_pairs,
+            #     sequence_length=self.sequence_length,
+            #     augment=False
+            # )
 
         if stage == "predict":
             # self.pred_data = np.load(self.predict_file_path, allow_pickle=True).item()
@@ -200,14 +205,30 @@ class KeystrokeDataModule(pl.LightningDataModule):
             shuffle=False
         )
 
+    def _fit_scaler(self, train_data):
+        all_features = []
+
+        for user_id, sessions in train_data.items():
+            for session_id, session in sessions.items():
+                features = extract_features_classic(session)  # (T, F)
+                all_features.append(features)
+
+        all_features = np.concatenate(all_features, axis=0)  # (total_T, F)
+
+        scaler = StandardScaler()
+        scaler.fit(all_features)
+
+        return scaler
+
 
 class PrepareData:
-    def __init__(self, dataset, window_size, samples_considered_per_epoch, augment):
+    def __init__(self, dataset, window_size, samples_considered_per_epoch, augment, scaler):
         self.data = dataset
         self.len = samples_considered_per_epoch
         self.window_size = window_size
         self.user_keys = list(self.data.keys())
         self.augment = augment
+        self.scaler = scaler
 
     def __getitem__(self, index):
         # first user & session
@@ -244,7 +265,10 @@ class PrepareData:
         if self.augment:
             session = augment_session(session)
 
-        prep_session = extract_features_classic(session)
+        prep_session = extract_features_classic(session)  # (T, F)
+
+        # apply standardization
+        prep_session = self.scaler.transform(prep_session)
         fix_session, mask = get_session_fixed_length_zero_pad_with_mask(prep_session, self.window_size, self.augment)
 
         return fix_session, mask
