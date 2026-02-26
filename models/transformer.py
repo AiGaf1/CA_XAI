@@ -12,13 +12,13 @@ def norm_embeddings(embeddings):
 class Transformer_LTE(nn.Module):
     def __init__(self, periods_dict, output_size=64, hidden_size=128,
                  window_size=50, vocab_size=256, key_emb_dim=16, use_projector=True,
-                 num_layers=4, num_heads=2, ff_dim=512, dropout=0.2):
+                 num_layers=4, num_heads=2, ff_dim=512, dropout=0.2, N_PERIODS=16):
         super().__init__()
         self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
         self.use_projector = use_projector
         self.window_size = window_size
         self.d_model = hidden_size
-        self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=conf.N_PERIODS)
+        self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=N_PERIODS)
         input_size = self.time_encoders.d_out + key_emb_dim
 
         self.input_proj = nn.Linear(input_size, self.d_model)
