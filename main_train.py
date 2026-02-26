@@ -1,21 +1,20 @@
 # 1. Standard Library
 import os
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-os.environ['TORCH_USE_CUDA_DSA'] = '1'
 # 2. Third-Party Libraries
 import numpy as np
 import pytorch_lightning as pl
 import wandb
 from dotenv import load_dotenv
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_metric_learning import losses, distances
 from torch import nn
+import torch
 # 3. Local Modules (Project Specific)
 import conf
 from data.Aalto.dataset import KeystrokeDataModule
 from models.Litmodel import KeystrokeLitModel
-from models.transformer import Transformer_LTE
+from models.factory import build_model
 from utils.callbacks import create_callbacks
+from utils.losses import build_loss
 from utils.tools import (
     export_to_onnx,
     setup_logger,
@@ -24,33 +23,29 @@ from utils.tools import (
 
 logger = setup_logger("main")
 
-from pytorch_metric_learning.miners import BatchHardMiner
-
-from pytorch_metric_learning.reducers import BaseReducer
-import torch
 
 
-class PositiveOnlyReducer(BaseReducer):
-    def element_reduction(self, losses, *args, **kwargs):
-        return torch.sum(losses[losses > 0])
+# class PositiveOnlyReducer(BaseReducer):
+#     def element_reduction(self, losses, *args, **kwargs):
+#         return torch.sum(losses[losses > 0])
 
-    def triplet_reduction(self, losses, loss_indices, embeddings, labels, **kwargs):
-        positive_mask = losses > 0
-        if positive_mask.sum() == 0:
-            return torch.tensor(0.0, device=losses.device, dtype=losses.dtype)
-        return torch.sum(losses[positive_mask])
+#     def triplet_reduction(self, losses, loss_indices, embeddings, labels, **kwargs):
+#         positive_mask = losses > 0
+#         if positive_mask.sum() == 0:
+#             return torch.tensor(0.0, device=losses.device, dtype=losses.dtype)
+#         return torch.sum(losses[positive_mask])
 
-class TripletLoss(nn.Module):
-    def __init__(self, margin=0.25):
-        super().__init__()
-        self.loss_fn = losses.TripletMarginLoss(
-            margin=margin,
-            distance=distances.CosineSimilarity(),
-            reducer=PositiveOnlyReducer(),  # ← Your custom reducer!
-            swap=True
-        )
-    def forward(self, embeddings, labels):
-        return self.loss_fn(embeddings, labels)
+# class TripletLoss(nn.Module):
+#     def __init__(self, margin=0.25):
+#         super().__init__()
+#         self.loss_fn = losses.TripletMarginLoss(
+#             margin=margin,
+#             distance=distances.CosineSimilarity(),
+#             reducer=PositiveOnlyReducer(),  # ← Your custom reducer!
+#             swap=True
+#         )
+#     def forward(self, embeddings, labels):
+#         return self.loss_fn(embeddings, labels)
 
 def initialize_environment(config: conf.ExperimentConfig) -> None:
     """Initialize training environment with reproducibility and hardware optimization."""
@@ -73,9 +68,7 @@ def initialize_environment(config: conf.ExperimentConfig) -> None:
 def create_data_module(
         file_path: str,
         predict_file_path: str = None,
-        min_session_length: int = 5,
-        windows_size: int = 32,
-        min_sessions_per_user: int = 2
+        config: conf.ExperimentConfig = None,
 ) -> KeystrokeDataModule:
     """Create and setup the data module for training and prediction."""
     logger.info(f"Loading data from {file_path}")
@@ -84,30 +77,30 @@ def create_data_module(
     dm = KeystrokeDataModule(
         raw_data=raw_data,
         predict_file_path=predict_file_path,
-        window_size=windows_size, # conf.window_size, min_session_length
-        samples_per_batch_train=conf.samples_per_batch_train,
-        samples_per_batch_val=conf.samples_per_batch_val,
-        batches_per_epoch_train=conf.batches_per_epoch_train,
-        batches_per_epoch_val=conf.batches_per_epoch_val,
-        train_val_division=conf.train_val_division,
-        augment=False,
-        seed=42,
-        min_session_length=min_session_length,
-        min_sessions_per_user=min_sessions_per_user
+        window_size=config.window_size, # conf.window_size, min_session_length
+        samples_per_batch_train=config.samples_per_batch_train,
+        samples_per_batch_val=config.samples_per_batch_val,
+        batches_per_epoch_train=config.batches_per_epoch_train,
+        batches_per_epoch_val=config.batches_per_epoch_val,
+        train_val_division=config.train_split,
+        seed=config.seed,
+        min_session_length=config.min_session_length,
+        min_sessions_per_user=config.min_sessions_per_user
     )
     dm.setup(None)
     return dm
 
 def create_trainer(
+        epochs: int,
         wandb_logger: WandbLogger = None,
-        callbacks: list[pl.Callback] = None
+        callbacks: list[pl.Callback] = None,
 ) -> pl.Trainer:
     """Create PyTorch Lightning trainer with optimal settings."""
     accelerator = "gpu" if torch.cuda.is_available() else "cpu"
     logger.info(f"Using device: {accelerator}")
 
     return pl.Trainer(
-        max_epochs=conf.epochs,
+        max_epochs=epochs,
         logger=wandb_logger,
         callbacks=callbacks,
         precision="bf16-mixed",
@@ -145,21 +138,17 @@ def run_experiment(config: conf.ExperimentConfig) -> None:
     initialize_environment(config)
 
     # 1. Data & Model Setup
-    dm = create_data_module(config.file_path, config.predict_file_path, min_session_length=config.min_session_length,
-                            windows_size=config.window_size, min_sessions_per_user=config.min_sessions_per_user)
+    dm = create_data_module(config.file_path, config.predict_file_path, config)
 
-    # loss_fn = SupConLoss()
-    loss_fn = TripletLoss()
-    # nn_model = CNN_LTE(periods_dict=dm.min_max, use_projector=conf.use_projector,
-    #                            sequence_length=conf.sequence_length)
-    nn_model = Transformer_LTE(periods_dict=dm.min_max)
+    loss_fn = build_loss(config)
+    nn_model = build_model(config, dm.min_max)
     nn_model = torch.compile(nn_model, mode='default')
-    lit_model = KeystrokeLitModel(nn_model, loss_fn)
+    lit_model = KeystrokeLitModel(nn_model, loss_fn, t_0=config.t_0, lr=config.lr)
 
     # 3. Training Infrastructure
-    wandb_logger, version = setup_wandb_logging(config=config, model_name=nn_model.__class__.__name__)
-    callbacks = create_callbacks(config.scenario)
-    trainer = create_trainer(wandb_logger, callbacks)
+    wandb_logger, run_dir = setup_wandb_logging(config=config, model_name=nn_model.__class__.__name__)
+    callbacks = create_callbacks(config.scenario, run_dir)
+    trainer = create_trainer(config.epochs, wandb_logger, callbacks)
 
     # 4. Execution
     trainer.fit(lit_model, datamodule=dm)
@@ -184,5 +173,5 @@ def run_experiment(config: conf.ExperimentConfig) -> None:
     # # visualize_activations(nn_model, dm)
 
 if __name__ == "__main__":
-    config = conf.ExperimentConfig(name='test', scenario='desktop')
+    config = conf.ExperimentConfig(scenario='desktop')
     run_experiment(config)

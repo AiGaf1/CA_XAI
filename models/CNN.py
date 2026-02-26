@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import conf
 from models.LTE import LearnableFourierFeatures
 import torch.nn.functional as F
 from collections import OrderedDict
@@ -27,7 +26,7 @@ class ParallelSum(nn.Module):
         self.modules_list = nn.ModuleList(modules)
         # Learnable weights for each path to improve gradient flow
 
-    def forward(self, x: torch.Tensor) -> int:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Normalize weights to sum to 1
 
         return sum(m(x) for m in self.modules_list)
@@ -54,14 +53,15 @@ def residual_block(channels: int, downsample: bool = False) -> nn.Sequential:
 
 class CNN_LTE(nn.Module):
     def __init__(self, periods_dict, output_size=512, hidden_size=128,
-                 sequence_length=128, vocab_size=256, key_emb_dim=16, use_projector=False):
+                 sequence_length=128, vocab_size=256, key_emb_dim=16, use_projector=False,
+                 n_periods=16):
         super().__init__()
         self.use_projector = use_projector
         self.sequence_length = sequence_length
         self.hidden_size = hidden_size
         self.output_size = output_size
 
-        self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=conf.N_PERIODS)
+        self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=n_periods)
         self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
 
         # Updated: Simplified input_size calculation

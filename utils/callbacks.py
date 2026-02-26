@@ -1,3 +1,4 @@
+import os
 from pytorch_lightning.callbacks import TQDMProgressBar
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from pytorch_lightning.callbacks import Callback
@@ -150,9 +151,11 @@ class PeriodicLRFinder(LearningRateFinder):
                     print(f"Scheduler updated successfully. T_0={T_0}, T_mult={T_mult}")
                     break
 
-def create_callbacks(scenario: str) -> list[pl.Callback]:
+def create_callbacks(scenario: str, run_dir: str = None) -> list[pl.Callback]:
     """Create training callbacks for checkpointing and monitoring."""
+    dirpath = os.path.join(run_dir, "checkpoints") if run_dir else None
     checkpoint_cb = ModelCheckpoint(
+        dirpath=dirpath,
         monitor="val/eer",
         mode="min",
         filename=f'{scenario}' + "-{epoch:02d}-{val/eer:.2f}",
@@ -162,9 +165,9 @@ def create_callbacks(scenario: str) -> list[pl.Callback]:
     )
 
     lr_monitor = LearningRateMonitor(logging_interval=None)
-    validation_silent_bar = ValidationSilentProgressBar()
+    # validation_silent_bar = ValidationSilentProgressBar()
 
-    return [checkpoint_cb, lr_monitor, validation_silent_bar]
+    return [checkpoint_cb, lr_monitor]  # , validation_silent_bar]
 
 class ValidationSilentProgressBar(TQDMProgressBar):
     def init_validation_tqdm(self):

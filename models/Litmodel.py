@@ -15,12 +15,12 @@ class KeystrokeLitModel(pl.LightningModule):
         loss_fn: Optional[torch.nn.Module],
         t_0: float = 2500,
         lr: float = 1e-3,
-        miner: Optional[BaseMiner] = None,
+        # miner: Optional[BaseMiner] = None,
     ):
         super().__init__()
         self.model = model
-        self.loss_fn = loss_fn
-        self.miner = miner
+        self.loss_fn = torch.compiler.disable(loss_fn)
+        # self.miner = miner
 
         for name, module in self.named_modules():
             module.name = name
@@ -50,8 +50,9 @@ class KeystrokeLitModel(pl.LightningModule):
             eer = compute_eer(z1.detach().float().cpu(), z2.detach().float().cpu(), labels.detach().float().cpu())
 
         # Logging
-        self.log(f"{stage}/loss", loss, prog_bar=True, on_epoch=True, on_step=False)
-        self.log(f"{stage}/eer", eer, prog_bar=True, on_epoch=True, on_step=False)
+        batch_size = x1.shape[0]
+        self.log(f"{stage}/loss", loss, prog_bar=True, on_epoch=True, on_step=False, batch_size=batch_size)
+        self.log(f"{stage}/eer", eer, prog_bar=True, on_epoch=True, on_step=False, batch_size=batch_size)
 
         return loss
 

@@ -1,5 +1,6 @@
 import os
 import logging
+from dataclasses import asdict
 
 from pytorch_metric_learning.losses import SupConLoss, ArcFaceLoss, TripletMarginLoss
 from pytorch_lightning.loggers import WandbLogger
@@ -36,7 +37,7 @@ def setup_wandb_logging(config: ExperimentConfig, model_name: str) -> tuple[Wand
         # f"embedding_{config.embedding_size}",
         f"window_size_{config.window_size}",
         f"epochs_{config.epochs}",
-        f"trigperiods_{config.n_periods}",
+        f"trigperiods_{config.model.n_periods}",
         f"head_{config.use_projector}",
         f"model_{model_name}"
     ]
@@ -44,15 +45,28 @@ def setup_wandb_logging(config: ExperimentConfig, model_name: str) -> tuple[Wand
     version = datetime.now().strftime("%Y%m%d_%H%M")
     experiment_name = f'{config.epochs}_{config.scenario}'
 
+    # save_dir is the parent of where WandbLogger writes {project}/{version}/
+    # so we point it one level up ("outputs") and let the logger create the rest
+    save_dir = "outputs"
+    run_dir = os.path.join(save_dir, config.name, version)
+
     wandb_logger = WandbLogger(
         project=config.name,
         name=experiment_name,
         version=version,
+        save_dir=save_dir,
         log_model=True,
         tags=tags
     )
 
-    return wandb_logger, version
+    # Flatten config into a dict, expanding the nested model sub-config with "model." prefix
+    raw = asdict(config)
+    hparams = {f"model.{k}": v for k, v in raw.pop("model").items()}
+    hparams.update(raw)
+    hparams["model_name"] = model_name
+    wandb_logger.log_hyperparams(hparams)
+
+    return wandb_logger, run_dir
 
 def load_comparisons(scenario: str, logger) -> list[tuple[str, str]]:
     """Load comparison pairs from file."""
@@ -74,9 +88,14 @@ def save_predictions(similarities: list[float], scenario: str, logger) -> None:
 def export_to_onnx(config: ExperimentConfig,ckpt_path: str, wandb_logger: WandbLogger, model):
     import torch.serialization
     from pytorch_metric_learning.distances.cosine_similarity import CosineSimilarity
+    from pytorch_metric_learning.reducers.avg_non_zero_reducer import AvgNonZeroReducer
+    from pytorch_metric_learning.reducers.mean_reducer import MeanReducer
 
-    # Allow the custom class
-    torch.serialization.add_safe_globals([CosineSimilarity, SupConLoss, ArcFaceLoss, TripletMarginLoss])
+    # Allow the custom classes needed for weights_only=True loading
+    torch.serialization.add_safe_globals([
+        CosineSimilarity, SupConLoss, ArcFaceLoss, TripletMarginLoss,
+        AvgNonZeroReducer, MeanReducer, getattr,
+    ])
 
     # After creating your model
     batch_size = config.batches_per_epoch_train
