@@ -1,5 +1,4 @@
 import torch
-from pytorch_metric_learning.miners import BaseMiner
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
@@ -24,7 +23,8 @@ class KeystrokeLitModel(pl.LightningModule):
 
         for name, module in self.named_modules():
             module.name = name
-        self.save_hyperparameters(ignore=['model'])
+        self.save_hyperparameters(ignore=['model', 'loss_fn'])
+        self._eer_outputs: Dict[str, list] = {"train": [], "val": []}
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         return self.model(x, mask)
@@ -46,21 +46,37 @@ class KeystrokeLitModel(pl.LightningModule):
 
         loss = self.loss_fn(embeddings, user_idx)
 
-        with torch.inference_mode():
-            eer = compute_eer(z1.detach().float().cpu(), z2.detach().float().cpu(), labels.detach().float().cpu())
+        self.log(f"{stage}/loss", loss, prog_bar=True, on_epoch=True, on_step=False, batch_size=x1.shape[0])
 
-        # Logging
-        batch_size = x1.shape[0]
-        self.log(f"{stage}/loss", loss, prog_bar=True, on_epoch=True, on_step=False, batch_size=batch_size)
-        self.log(f"{stage}/eer", eer, prog_bar=True, on_epoch=True, on_step=False, batch_size=batch_size)
+        self._eer_outputs[stage].append((
+            z1.detach().float().cpu(),
+            z2.detach().float().cpu(),
+            labels.detach().float().cpu(),
+        ))
 
         return loss
+
+    def _compute_epoch_eer(self, stage: str):
+        outputs = self._eer_outputs.pop(stage, [])
+        if not outputs:
+            return
+        z1 = torch.cat([o[0] for o in outputs])
+        z2 = torch.cat([o[1] for o in outputs])
+        labels = torch.cat([o[2] for o in outputs])
+        eer = compute_eer(z1, z2, labels)
+        self.log(f"{stage}/eer", eer, prog_bar=True)
 
     def training_step(self, batch, batch_idx):
         return self._step_common(batch, "train")
 
     def validation_step(self, batch, batch_idx):
         return self._step_common(batch, "val")
+
+    def on_train_epoch_end(self):
+        self._compute_epoch_eer("train")
+
+    def on_validation_epoch_end(self):
+        self._compute_epoch_eer("val")
 
     # def test_step(self, batch, batch_idx):
     #     out = self._step_common(batch)

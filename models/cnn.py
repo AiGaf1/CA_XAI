@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from models.LTE import LearnableFourierFeatures
+from models.fourier_encoding import LearnableFourierFeatures
 import torch.nn.functional as F
 from collections import OrderedDict
 
@@ -51,7 +51,7 @@ def residual_block(channels: int, downsample: bool = False) -> nn.Sequential:
     )
 
 
-class CNN_LTE(nn.Module):
+class KeystrokeCNN(nn.Module):
     def __init__(self, periods_dict, output_size=512, hidden_size=128,
                  sequence_length=128, vocab_size=256, key_emb_dim=16, use_projector=False,
                  n_periods=16):

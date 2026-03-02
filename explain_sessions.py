@@ -1,5 +1,5 @@
 import pytorch_lightning as pl
-import conf
+import config as conf
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -7,12 +7,12 @@ import random
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d  # For 1D Gaussian blur
 
-from models.TTC import run_tcc_experiment, UserBaselineKNN
-from main_train import create_data_module
+from models.temporal_confidence import run_tcc_experiment, UserBaselineKNN
+from train import create_data_module
 from utils.visualization import visualize_keystrokes
 from utils.tools import setup_logger
-from models.Litmodel import KeystrokeLitModel
-from models.transformer import Transformer_LTE
+from models.lit_model import KeystrokeLitModel
+from models.transformer import KeystrokeTransformer
 from utils.metrics import compute_distance
 
 logger = setup_logger("main")
@@ -326,7 +326,7 @@ def run_experiment(file_path: str):
     # =====================
     # Model
     # =====================
-    base_model = Transformer_LTE(
+    base_model = KeystrokeTransformer(
         periods_dict=dm.min_max,
         use_projector=conf.use_projector,
         window_size=conf.window_size,

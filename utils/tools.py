@@ -7,9 +7,8 @@ from pytorch_lightning.loggers import WandbLogger
 import wandb
 from datetime import datetime
 
-from models.Litmodel import KeystrokeLitModel
-from conf import ExperimentConfig
-from models.CNN import CNN_LTE
+from models.lit_model import KeystrokeLitModel
+from config import ExperimentConfig
 
 
 def setup_logger(name: str = None, level=logging.INFO) -> logging.Logger:

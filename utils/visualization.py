@@ -6,7 +6,7 @@ from torch import nn
 import numpy as np
 import seaborn as sns
 import math
-from models.LTE import LearnableFourierFeatures
+from models.fourier_encoding import LearnableFourierFeatures
 
 # KEYBOARD_LAYOUT = {
 #     # Row 1 (numbers)

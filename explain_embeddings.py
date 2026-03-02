@@ -1,12 +1,12 @@
 import torch
 
-from main_train import create_data_module
+from train import create_data_module
 from utils.tools import setup_logger
 from utils.visualization import compare_two_users
-from models.Litmodel import KeystrokeLitModel
-from models.transformer import Transformer_LTE
+from models.lit_model import KeystrokeLitModel
+from models.transformer import KeystrokeTransformer
 import pytorch_lightning as pl
-import conf
+import config as conf
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Tuple, List, Dict
@@ -263,7 +263,7 @@ def run_experiment(file_path: str):
     # print((x1[0], x2[0]), labels[0], (u1[0], u2[0]))
     ckpt_path = "Keystroke-XAI/20260130_1234/checkpoints/mobile-651-1.50.ckpt"
 
-    nn_model = Transformer_LTE(periods_dict=dm.init_periods, use_projector=conf.use_projector)
+    nn_model = KeystrokeTransformer(periods_dict=dm.init_periods, use_projector=conf.use_projector)
     loaded_model = KeystrokeLitModel.load_from_checkpoint(
         checkpoint_path = ckpt_path,
         model=nn_model

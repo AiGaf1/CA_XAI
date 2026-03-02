@@ -3,7 +3,7 @@ from pytorch_metric_learning import distances
 from pytorch_metric_learning.losses import SupConLoss, ArcFaceLoss, TripletMarginLoss
 from torch import nn
 
-import conf
+import config as conf
 
 
 def build_loss(config: conf.ExperimentConfig) -> nn.Module:

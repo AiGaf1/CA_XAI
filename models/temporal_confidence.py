@@ -1,5 +1,4 @@
 #Temporal Confidence Collapse (TCC)
-import numpy as np
 import torch
 from scipy.stats import multivariate_normal
 import matplotlib.pyplot as plt
@@ -7,7 +6,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from datetime import datetime
 
-import conf
+import config as conf
 
 
 class UserBaselineKNN:

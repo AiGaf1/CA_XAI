@@ -1,14 +1,14 @@
 import torch.nn as nn
-import conf
-from models.transformer import Transformer_LTE
-from models.CNN import CNN_LTE
+import config as conf
+from models.transformer import KeystrokeTransformer
+from models.cnn import KeystrokeCNN
 
 
 def build_model(config: conf.ExperimentConfig, periods_dict) -> nn.Module:
     """Instantiate the model specified by config.model_type."""
     if config.model_type == "transformer":
         cfg: conf.TransformerConfig = config.model
-        return Transformer_LTE(
+        return KeystrokeTransformer(
             periods_dict=periods_dict,
             hidden_size=config.hidden_size,
             output_size=config.output_size,
@@ -22,7 +22,7 @@ def build_model(config: conf.ExperimentConfig, periods_dict) -> nn.Module:
         )
     elif config.model_type == "cnn":
         cfg: conf.CNNConfig = config.model
-        return CNN_LTE(
+        return KeystrokeCNN(
             periods_dict=periods_dict,
             hidden_size=config.hidden_size,
             output_size=config.output_size,

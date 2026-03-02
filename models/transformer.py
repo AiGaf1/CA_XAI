@@ -1,28 +1,25 @@
 import torch
 import torch.nn as nn
-import conf
-from models.LTE import LearnableFourierFeatures
-import torch.nn.functional as F
+from models.fourier_encoding import LearnableFourierFeatures
+from models.cnn import norm_embeddings
 from collections import OrderedDict
 
-def norm_embeddings(embeddings):
-    return F.normalize(embeddings, dim=-1, p=2)
 
-
-class Transformer_LTE(nn.Module):
+class KeystrokeTransformer(nn.Module):
     def __init__(self, periods_dict, output_size=64, hidden_size=128,
                  window_size=50, vocab_size=256, key_emb_dim=16, use_projector=False,
                  num_layers=4, num_heads=2, ff_dim=512, dropout=0.2, n_periods=16):
         super().__init__()
         self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
         self.use_projector = use_projector
+        self.output_size = output_size
         self.window_size = window_size
         self.d_model = hidden_size
         self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=n_periods)
         input_size = self.time_encoders.d_out + key_emb_dim
 
         self.input_proj = nn.Linear(input_size, self.d_model)
-        self.pos_enc = nn.Parameter(torch.zeros(1, window_size, self.d_model))
+        self.pos_enc = nn.Parameter(torch.randn(1, window_size, self.d_model) * 0.02)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.d_model,
@@ -48,7 +45,7 @@ class Transformer_LTE(nn.Module):
 
         # 1. Fourier encoding
         # ----------------------------
-        time_vec = torch.stack([hold, flight], dim=-1)  # (B, L, 3)
+        time_vec = torch.stack([hold, flight], dim=-1)  # (B, L, 2)
         time_feat = self.time_encoders(time_vec)  # (B, L, 2D)
         # ----------------------------
         # 2. Key embedding
@@ -73,3 +70,6 @@ class Transformer_LTE(nn.Module):
             embedding = self.projector(embedding)
 
         return norm_embeddings(embedding)
+
+    def get_embedding_dim(self) -> int:
+        return self.output_size if self.use_projector else self.d_model

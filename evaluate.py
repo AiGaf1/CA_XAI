@@ -7,11 +7,11 @@ import random
 import pytorch_lightning as pl
 
 
-from models.CNN import CNN_LTE, norm_embeddings
+from models.cnn import KeystrokeCNN, norm_embeddings
 from utils.tools import compute_init_periods
 from data.Aalto.preprocessing import extract_features_classic, get_session_fixed_length, compute_feature_quantiles
 # from main.data.preprocessing import get_session_fixed_length, augment_session, compute_feature_quantiles,
-import conf
+import config as conf
 
 sequence_length = 128
 embedding_size = 512
@@ -154,7 +154,7 @@ if __name__ == "__main__":
     min_max_quantile = compute_feature_quantiles(dev_data)
     init_periods = compute_init_periods(min_max_quantile, 16)
     checkpoint_path = '../scripts/keystroke-ca/20251111_0149/checkpoints/classicLearnPeriodsKeyEmb_mobile-1931-1.45.ckpt'
-    model = CNN_LTE(init_periods)
+    model = KeystrokeCNN(init_periods)
     loaded_model = load_model(model, checkpoint_path)
     embeddings = compute_embeddings(loaded_model, data)
     distances = compute_distances(embeddings, comps, metric="euclidean")

@@ -1,7 +1,6 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-import torch.fft as fft
 import math
 
 class LearnableFourierFeatures(nn.Module):
@@ -87,6 +86,7 @@ class FixedFourierFeatures(nn.Module):
             dim=-1                              # (B, L, M, D, 2)
         )
         return fourier.flatten(start_dim=-3)
+
 
 class SpectralConv1d(nn.Module):
     def __init__(self, in_channels, out_channels, n_freqs):

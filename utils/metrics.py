@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from models.CNN import norm_embeddings
+from models.cnn import norm_embeddings
 
 
 def compute_distances4comps(embeddings, comps, metric="euclidean"):

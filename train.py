@@ -9,9 +9,9 @@ from pytorch_lightning.loggers import WandbLogger
 from torch import nn
 import torch
 # 3. Local Modules (Project Specific)
-import conf
+import config as conf
 from data.Aalto.dataset import KeystrokeDataModule
-from models.Litmodel import KeystrokeLitModel
+from models.lit_model import KeystrokeLitModel
 from models.factory import build_model
 from utils.callbacks import create_callbacks
 from utils.losses import build_loss
