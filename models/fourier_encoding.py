@@ -4,16 +4,18 @@ import torch.nn.functional as F
 import math
 
 class LearnableFourierFeatures(nn.Module):
-    def __init__(self, feature_dict: dict, num_features: int):
+    def __init__(self, feature_dict: dict, num_features: int, use_sigmoid: bool = True):
         """
         feature_dict: dict where key=feature_name, value={"min": float, "max": float}
         num_features: number of Fourier frequencies per feature
+        use_sigmoid: if True, gate scales with sigmoid; if False, use scales directly (unbounded)
         """
         super().__init__()
 
         self.feature_names = list(feature_dict.keys())
         self.num_features = num_features
         self.input_dim = len(self.feature_names)
+        self.use_sigmoid = use_sigmoid
 
         # Initialize a frequency matrix (M x D)
         period_list = []
@@ -39,7 +41,7 @@ class LearnableFourierFeatures(nn.Module):
         """
 
         x = x.unsqueeze(-1)                     # (B, L, M, 1)
-        scales = torch.sigmoid(self.scales_raw) # bounded (0,1)
+        scales = torch.sigmoid(self.scales_raw) if self.use_sigmoid else self.scales_raw
         proj = x * self.freq * scales          # (B, L, M, D)
         fourier = torch.stack(
             [proj.sin(), proj.cos()],

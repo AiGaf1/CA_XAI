@@ -3,10 +3,9 @@ import random
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
-from data.Aalto.preprocessing import (augment_session, compute_feature_min_max,
+from data.Aalto.preprocessing import (compute_feature_min_max,
                                       extract_features_classic, get_session_fixed_length_zero_pad_with_mask)
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 
 from typing import Dict, List, Tuple, Any
 import torch
@@ -30,7 +29,6 @@ class KeystrokeDataModule(pl.LightningDataModule):
         num_workers_val: int = 4,
         persistent_workers: bool = True,
         train_val_division: float = 0.8,
-        augment: bool = False,
         seed: int = 42,
         min_session_length: int = 5,
         min_sessions_per_user: int = 2
@@ -47,7 +45,6 @@ class KeystrokeDataModule(pl.LightningDataModule):
         self.num_workers_val = num_workers_val
         self.persistent_workers = persistent_workers
         self.train_val_division = train_val_division
-        self.augment = augment
         self.seed = seed
 
         self._train_users = None
@@ -122,7 +119,6 @@ class KeystrokeDataModule(pl.LightningDataModule):
             self.train_data = {u: self.data[u] for u in self._train_users}
             self.val_data = {u: self.data[u] for u in self._val_users}
             # self.test_data = {u: data[u] for u in self._test_users}
-            self.scaler = self._fit_scaler(self.train_data)
 
             # self.val_shared_pairs = build_cross_user_sequence_pairs(self.val_data)
             self.min_max = compute_feature_min_max(self.train_data)
@@ -131,16 +127,12 @@ class KeystrokeDataModule(pl.LightningDataModule):
                 self.train_data,
                 window_size=self.sequence_length,
                 samples_considered_per_epoch=self.batches_per_epoch_train * self.samples_per_batch_train,
-                augment=self.augment,
-                scaler=self.scaler
             )
 
             self.ds_val = PrepareData(
                 self.val_data,
                 window_size=self.sequence_length,
                 samples_considered_per_epoch=self.batches_per_epoch_val * self.samples_per_batch_val,
-                augment=False,
-                scaler=self.scaler
             )
             # self.ds_val_same_seq = SameSequenceContrastiveData(
             #     self.val_data,
@@ -150,12 +142,8 @@ class KeystrokeDataModule(pl.LightningDataModule):
             # )
 
         if stage == "predict":
-            # self.pred_data = np.load(self.predict_file_path, allow_pickle=True).item()
-            # self.ds_predict = PreparePredictData(
-            #     self.pred_data,
-            #     window_size=self.window_size,
-            # )
-            self.ds_predict = self.ds_val
+            pred_data = np.load(self.predict_file_path, allow_pickle=True).item()
+            self.ds_predict = PreparePredictData(pred_data, self.sequence_length)
 
     @property
     def num_train_users(self) -> int:
@@ -167,6 +155,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
             batch_size=self.samples_per_batch_train,
             num_workers=self.num_workers_train,
             persistent_workers=self.persistent_workers and self.num_workers_train > 0,
+            pin_memory=True,
             shuffle=True
         )
 
@@ -176,6 +165,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
             batch_size=self.samples_per_batch_val,
             num_workers=self.num_workers_val,
             persistent_workers=self.persistent_workers and self.num_workers_val > 0,
+            pin_memory=True,
             shuffle=False
         )
 
@@ -205,93 +195,74 @@ class KeystrokeDataModule(pl.LightningDataModule):
             shuffle=False
         )
 
-    def _fit_scaler(self, train_data):
-        all_features = []
-
-        for user_id, sessions in train_data.items():
-            for session_id, session in sessions.items():
-                features = extract_features_classic(session)  # (T, F)
-                all_features.append(features)
-
-        all_features = np.concatenate(all_features, axis=0)  # (total_T, F)
-
-        scaler = StandardScaler()
-        scaler.fit(all_features)
-
-        return scaler
-
 
 class PrepareData:
-    def __init__(self, dataset, window_size, samples_considered_per_epoch, augment, scaler):
-        self.data = dataset
+    def __init__(self, dataset, window_size, samples_considered_per_epoch):
         self.len = samples_considered_per_epoch
-        self.window_size = window_size
-        self.user_keys = list(self.data.keys())
-        self.augment = augment
-        self.scaler = scaler
 
-    def __getitem__(self, index):
-        # first user & session
-        user_idx_1, user_key_1 = self._pick_random_user(self.user_keys)
-        session_idx_1 = self._pick_random_session(user_key_1, exclude_idx=None)
-        session_1, mask_1 = self._load_and_process_session(user_key_1, session_idx_1)
+        # Pre-compute features and fixed-length padded tensors once at startup
+        self.data: dict[Any, dict[Any, tuple[torch.Tensor, torch.Tensor]]] = {}
+        for user, sessions in dataset.items():
+            self.data[user] = {}
+            for sid, sess in sessions.items():
+                feat = extract_features_classic(sess)
+                fixed, mask = get_session_fixed_length_zero_pad_with_mask(feat, window_size)
+                self.data[user][sid] = (torch.from_numpy(fixed).float(), torch.from_numpy(mask))
 
-        # decide same/different
+        self.user_keys: list = list(self.data.keys())
+        self.session_keys: dict[Any, list] = {
+            user: list(sids.keys()) for user, sids in self.data.items()
+        }
+    # ------------------------------------------------------------------
+    # Dataset protocol
+    # ------------------------------------------------------------------
+
+    def __len__(self) -> int:
+        return self.len
+
+    def __getitem__(self, _):
+        user_idx_1, user_key_1 = self._random_user()
+        sid_1 = self._random_session(user_key_1)
+        session_1, mask_1 = self.data[user_key_1][sid_1]
+
         same_user = random.random() < 0.5
         label = 0 if same_user else 1
 
-        if same_user: # SAME USER
+        if same_user:
             user_idx_2, user_key_2 = user_idx_1, user_key_1
-            session_idx_2 = self._pick_random_session(user_key_2, exclude_idx=session_idx_1)
-        else: # DIFFERENT USERS
-            user_idx_2, user_key_2  = self._pick_random_different_user(self.user_keys, user_idx_1)
-            session_idx_2 = self._pick_random_session(user_key_2, exclude_idx=None)
+            sid_2 = self._random_session(user_key_2, exclude=sid_1)
+        else:
+            user_idx_2, user_key_2 = self._random_different_user(user_idx_1)
+            sid_2 = self._random_session(user_key_2)
 
-        session_2, mask_2 = self._load_and_process_session(user_key_2, session_idx_2)
+        session_2, mask_2 = self.data[user_key_2][sid_2]
+
         return (
             (session_1, mask_1),
             (session_2, mask_2),
             label,
             (user_key_1, user_key_2),
-            (torch.tensor(user_idx_1), torch.tensor(user_idx_2)) #(user_key_1, user_key_2),
+            (torch.tensor(user_idx_1), torch.tensor(user_idx_2)),
         )
 
-    def __len__(self):
-        return self.len
+    # ------------------------------------------------------------------
+    # Sampling helpers
+    # ------------------------------------------------------------------
 
-    def _load_and_process_session(self, user_id, session_id):
-        """Load raw session → optionally augment → fix length → feature extraction."""
-        session = self.data[user_id][session_id]
-        if self.augment:
-            session = augment_session(session)
+    def _random_user(self) -> tuple[int, Any]:
+        idx = random.randrange(len(self.user_keys))
+        return idx, self.user_keys[idx]
 
-        prep_session = extract_features_classic(session)  # (T, F)
+    def _random_different_user(self, exclude_idx: int) -> tuple[int, Any]:
+        idx = exclude_idx
+        while idx == exclude_idx:
+            idx = random.randrange(len(self.user_keys))
+        return idx, self.user_keys[idx]
 
-        # apply standardization
-        prep_session = self.scaler.transform(prep_session)
-        fix_session, mask = get_session_fixed_length_zero_pad_with_mask(prep_session, self.window_size, self.augment)
-
-        return fix_session, mask
-
-    @staticmethod
-    def _pick_random_user(user_keys):
-        """Pick a random user (optionally excluding one)."""
-        possible_indices = list(range(len(user_keys)))
-        idx = random.randrange(len(possible_indices))
-        return idx, user_keys[idx]
-
-    @staticmethod
-    def _pick_random_different_user(user_keys, user_idx_1):
-        """Return a random user != user_idx_1 using a fast while-loop."""
-        user_idx_2 = user_idx_1
-        while user_idx_2 == user_idx_1:
-            user_idx_2 = random.randrange(len(user_keys))
-        return user_idx_2, user_keys[user_idx_2]
-
-    def _pick_random_session(self, user_id, exclude_idx=None):
-        sessions = list(self.data[user_id].keys())
-        if exclude_idx is not None:
-            sessions = [s for s in sessions if s != exclude_idx]
+    def _random_session(self, user_id, exclude=None) -> Any:
+        sessions = self.session_keys[user_id]
+        if exclude is not None:
+            sessions = [s for s in sessions if s != exclude]
         return random.choice(sessions)
 
 class PreparePredictData:
@@ -353,9 +324,6 @@ class SameSequenceContrastiveData:
 
     def _load(self, user_id, session_id):
         session = self.data[user_id][session_id]
-
-        if self.augment:
-            session = augment_session(session)
 
         prep = extract_features_classic(session)
         fixed, mask = get_session_fixed_length_zero_pad_with_mask(

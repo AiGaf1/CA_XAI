@@ -29,8 +29,16 @@ def setup_logger(name: str = None, level=logging.INFO) -> logging.Logger:
         logger.propagate = False
     return logger
 
-def setup_wandb_logging(config: ExperimentConfig, model_name: str) -> tuple[WandbLogger, str]:
-    """Setup W&B logging with appropriate tags and versioning."""
+def setup_wandb_logging(
+    config: ExperimentConfig,
+    model_name: str,
+    run_id: str = None,
+) -> tuple[WandbLogger, str]:
+    """Setup W&B logging with appropriate tags and versioning.
+
+    When *run_id* is provided (sweep mode) the logger attaches to the
+    already-active W&B run instead of creating a new one.
+    """
     tags = [
         f"scenario_{config.scenario}",
         # f"embedding_{config.embedding_size}",
@@ -41,7 +49,7 @@ def setup_wandb_logging(config: ExperimentConfig, model_name: str) -> tuple[Wand
         f"model_{model_name}"
     ]
 
-    version = datetime.now().strftime("%Y%m%d_%H%M")
+    version = run_id if run_id else datetime.now().strftime("%Y%m%d_%H%M")
     experiment_name = f'{config.epochs}_{config.scenario}'
 
     # save_dir is the parent of where WandbLogger writes {project}/{version}/
@@ -49,27 +57,40 @@ def setup_wandb_logging(config: ExperimentConfig, model_name: str) -> tuple[Wand
     save_dir = "outputs"
     run_dir = os.path.join(save_dir, config.name, version)
 
-    wandb_logger = WandbLogger(
-        project=config.name,
-        name=experiment_name,
-        version=version,
-        save_dir=save_dir,
-        log_model=True,
-        tags=tags
-    )
+    if run_id:
+        # Attach to the sweep-managed run — do not call wandb.init() again
+        wandb_logger = WandbLogger(
+            project=config.name,
+            name=experiment_name,
+            id=run_id,
+            resume="allow",
+            save_dir=save_dir,
+            log_model=True,
+            tags=tags,
+        )
+    else:
+        wandb_logger = WandbLogger(
+            project=config.name,
+            name=experiment_name,
+            version=version,
+            save_dir=save_dir,
+            log_model=True,
+            tags=tags,
+        )
 
-    # Flatten config into a dict, expanding the nested model sub-config with "model." prefix
-    raw = asdict(config)
-    hparams = {f"model.{k}": v for k, v in raw.pop("model").items()}
-    hparams.update(raw)
-    hparams["model_name"] = model_name
-    wandb_logger.log_hyperparams(hparams)
+    if not run_id:
+        # In sweep mode the agent already owns the config — skip to avoid locked-key warnings
+        raw = asdict(config)
+        hparams = {f"model.{k}": v for k, v in raw.pop("model").items()}
+        hparams.update(raw)
+        hparams["model_name"] = model_name
+        wandb_logger.log_hyperparams(hparams)
 
     return wandb_logger, run_dir
 
 def load_comparisons(scenario: str, logger) -> list[tuple[str, str]]:
     """Load comparison pairs from file."""
-    comps_file = f"data/{scenario}/{scenario}_comparisons.txt"
+    comps_file = f"data/Aalto/raw/{scenario}/{scenario}_comparisons.txt"
 
     with open(comps_file, "r") as f:
         comparisons = eval(f.readline())
@@ -77,9 +98,10 @@ def load_comparisons(scenario: str, logger) -> list[tuple[str, str]]:
     logger.info(f"Loaded {len(comparisons)} comparison pairs")
     return comparisons
 
-def save_predictions(similarities: list[float], scenario: str, logger) -> None:
+def save_predictions(similarities: list[float], scenario: str, run_dir: str, logger) -> None:
     """Save similarity scores to file."""
-    output_file = f'{scenario}_predictions.txt'
+    os.makedirs(run_dir, exist_ok=True)
+    output_file = os.path.join(run_dir, f'{scenario}_predictions.txt')
     with open(output_file, "w") as f:
         f.write(str(similarities))
     logger.info(f"Predictions saved to {output_file}")
@@ -119,12 +141,16 @@ def export_to_onnx(config: ExperimentConfig,ckpt_path: str, wandb_logger: WandbL
     float_score = float(score_str)
     rounded_score = round(float_score, 2)
 
-    best_model = KeystrokeLitModel.load_from_checkpoint(
+    best_lit = KeystrokeLitModel.load_from_checkpoint(
         ckpt_path,
         model=model,
+        loss_fn=None,
         strict=False
     )
-    best_model.eval()
+    # Unwrap torch.compile if applied, then move to device and set eval
+    export_model = getattr(best_lit.model, '_orig_mod', best_lit.model)
+    export_model = export_model.to(device)
+    export_model.eval()
 
     # Construct ONNX save path in the parent directory under 'onnx' subfolder
     ckpt_dir = os.path.dirname(ckpt_path)  # e.g., "Keystroke-XAI/20251227_0330/checkpoints"
@@ -135,7 +161,7 @@ def export_to_onnx(config: ExperimentConfig,ckpt_path: str, wandb_logger: WandbL
 
     with torch.no_grad():
         torch.onnx.export(
-            best_model,
+            export_model,
             (dummy_x, dummy_mask),
             onnx_path,
             export_params=True,
@@ -148,7 +174,6 @@ def export_to_onnx(config: ExperimentConfig,ckpt_path: str, wandb_logger: WandbL
                 'mask': {0: 'batch_size'},
                 'embedding': {0: 'batch_size'}
             },
-            dynamo = True
         )
 
     # Extract run_id from a path (assuming structure like "Keystroke-XAI/20251227_0330/checkpoints/...")

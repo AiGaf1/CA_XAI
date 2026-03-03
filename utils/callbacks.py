@@ -1,5 +1,6 @@
 import os
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+import pytorch_lightning as pl
 
 
 def create_callbacks(scenario: str, run_dir: str = None) -> list[pl.Callback]:

@@ -8,14 +8,16 @@ from collections import OrderedDict
 class KeystrokeTransformer(nn.Module):
     def __init__(self, periods_dict, output_size=64, hidden_size=128,
                  window_size=50, vocab_size=256, key_emb_dim=16, use_projector=False,
-                 num_layers=4, num_heads=2, ff_dim=512, dropout=0.2, n_periods=16):
+                 num_layers=4, num_heads=2, ff_dim=512, dropout=0.2, n_periods=16,
+                 use_pos_enc=True, use_sigmoid=True):
         super().__init__()
         self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
         self.use_projector = use_projector
+        self.use_pos_enc = use_pos_enc
         self.output_size = output_size
         self.window_size = window_size
         self.d_model = hidden_size
-        self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=n_periods)
+        self.time_encoders = LearnableFourierFeatures(periods_dict, num_features=n_periods, use_sigmoid=use_sigmoid)
         input_size = self.time_encoders.d_out + key_emb_dim
 
         self.input_proj = nn.Linear(input_size, self.d_model)
@@ -27,9 +29,10 @@ class KeystrokeTransformer(nn.Module):
             dim_feedforward=ff_dim,
             dropout=dropout,
             activation='gelu',
-            batch_first=True
+            batch_first=True, 
+            norm_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers, enable_nested_tensor=False)
 
         if self.use_projector:
             self.projector = nn.Sequential(OrderedDict([
@@ -55,7 +58,8 @@ class KeystrokeTransformer(nn.Module):
         # 3. Combine and project
         # ----------------------------
         encoded_x = self.input_proj(torch.cat([time_feat, key_feat], dim=-1))
-        encoded_x = encoded_x + self.pos_enc[:, :encoded_x.size(1), :]
+        if self.use_pos_enc:
+            encoded_x = encoded_x + self.pos_enc[:, :encoded_x.size(1), :]
 
         # 4. Transformer
         attn_mask = (mask == 0)

@@ -17,8 +17,8 @@ class KeystrokeLitModel(pl.LightningModule):
         # miner: Optional[BaseMiner] = None,
     ):
         super().__init__()
-        self.model = model
-        self.loss_fn = torch.compiler.disable(loss_fn)
+        self.model = torch.compile(model, mode='default')
+        self.loss_fn = loss_fn
         # self.miner = miner
 
         for name, module in self.named_modules():
@@ -57,7 +57,7 @@ class KeystrokeLitModel(pl.LightningModule):
         return loss
 
     def _compute_epoch_eer(self, stage: str):
-        outputs = self._eer_outputs.pop(stage, [])
+        outputs = self._eer_outputs[stage]
         if not outputs:
             return
         z1 = torch.cat([o[0] for o in outputs])
@@ -65,6 +65,7 @@ class KeystrokeLitModel(pl.LightningModule):
         labels = torch.cat([o[2] for o in outputs])
         eer = compute_eer(z1, z2, labels)
         self.log(f"{stage}/eer", eer, prog_bar=True)
+        self._eer_outputs[stage].clear()
 
     def training_step(self, batch, batch_idx):
         return self._step_common(batch, "train")

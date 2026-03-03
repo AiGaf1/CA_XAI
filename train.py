@@ -1,5 +1,13 @@
 # 1. Standard Library
 import os
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning, module="torch._dynamo")
+warnings.filterwarnings("ignore", message=".*dynamic_axes.*dynamo.*")
+warnings.filterwarnings("ignore", message=".*dtype.*align.*", module="numpy")
+warnings.filterwarnings("ignore", message=".*wandb run already in progress.*")
+warnings.filterwarnings("ignore", message=".*bf16-mixed is not supported by the model summary.*")
+
 # 2. Third-Party Libraries
 import numpy as np
 import pytorch_lightning as pl
@@ -17,53 +25,32 @@ from utils.callbacks import create_callbacks
 from utils.losses import build_loss
 from utils.tools import (
     export_to_onnx,
+    load_comparisons,
+    save_predictions,
     setup_logger,
     setup_wandb_logging
 )
+from utils.metrics import compute_distances4comps, normalize_distances
+from utils.sweep import run_sweep_agent
 
-logger = setup_logger("main")
+logger = setup_logger("train")
 
-
-
-# class PositiveOnlyReducer(BaseReducer):
-#     def element_reduction(self, losses, *args, **kwargs):
-#         return torch.sum(losses[losses > 0])
-
-#     def triplet_reduction(self, losses, loss_indices, embeddings, labels, **kwargs):
-#         positive_mask = losses > 0
-#         if positive_mask.sum() == 0:
-#             return torch.tensor(0.0, device=losses.device, dtype=losses.dtype)
-#         return torch.sum(losses[positive_mask])
-
-# class TripletLoss(nn.Module):
-#     def __init__(self, margin=0.25):
-#         super().__init__()
-#         self.loss_fn = losses.TripletMarginLoss(
-#             margin=margin,
-#             distance=distances.CosineSimilarity(),
-#             reducer=PositiveOnlyReducer(),  # ← Your custom reducer!
-#             swap=True
-#         )
-#     def forward(self, embeddings, labels):
-#         return self.loss_fn(embeddings, labels)
-
-def initialize_environment(config: conf.ExperimentConfig) -> None:
-    """Initialize training environment with reproducibility and hardware optimization."""
-    pl.seed_everything(config.seed, workers=True, verbose=False)
+def wandb_login() -> None:
     load_dotenv()
-
-    api_key = os.getenv("WANDB_API_KEY")  # Fixed typo from "WAND_API_KEY"
+    os.makedirs("outputs", exist_ok=True)
+    os.environ["WANDB_DIR"] = os.path.abspath("outputs")
+    api_key = os.getenv("WANDB_API_KEY")
     if api_key:
         wandb.login(key=api_key)
     else:
         logger.warning("WANDB_API_KEY not found in environment variables.")
 
-    # Optimize for modern GPUs (Ampere and later)
+
+def initialize_environment(config: conf.ExperimentConfig) -> None:
+    pl.seed_everything(config.seed, workers=True, verbose=False)
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
-
-    logger.info(
-        f"Environment initialized | Seed: {config.seed} | Device: {'GPU' if torch.cuda.is_available() else 'CPU'}")
+    logger.info(f"Environment initialized | Seed: {config.seed} | Device: {'GPU' if torch.cuda.is_available() else 'CPU'}")
 
 def create_data_module(
         file_path: str,
@@ -115,6 +102,7 @@ def create_trainer(
 def run_predictions(
         trainer: pl.Trainer,
         model: KeystrokeLitModel,
+        dm: KeystrokeDataModule,
         checkpoint_path: str = "best"
 ) -> dict[str, torch.Tensor]:
     """Run predictions and collect embeddings."""
@@ -122,6 +110,7 @@ def run_predictions(
 
     predictions = trainer.predict(
         model,
+        datamodule=dm,
         ckpt_path=checkpoint_path
     )
 
@@ -134,7 +123,7 @@ def run_predictions(
     logger.info(f"Collected {len(embeddings)} session embeddings")
     return embeddings
 
-def run_experiment(config: conf.ExperimentConfig) -> None:
+def run_experiment(config: conf.ExperimentConfig, sweep_run_id: str = None) -> None:
     initialize_environment(config)
 
     # 1. Data & Model Setup
@@ -142,11 +131,10 @@ def run_experiment(config: conf.ExperimentConfig) -> None:
 
     loss_fn = build_loss(config)
     nn_model = build_model(config, dm.min_max)
-    nn_model = torch.compile(nn_model, mode='default')
     lit_model = KeystrokeLitModel(nn_model, loss_fn, t_0=config.t_0, lr=config.lr)
 
     # 3. Training Infrastructure
-    wandb_logger, run_dir = setup_wandb_logging(config=config, model_name=nn_model.__class__.__name__)
+    wandb_logger, run_dir = setup_wandb_logging(config=config, model_name=nn_model.__class__.__name__, run_id=sweep_run_id)
     callbacks = create_callbacks(config.scenario, run_dir)
     trainer = create_trainer(config.epochs, wandb_logger, callbacks)
 
@@ -158,20 +146,20 @@ def run_experiment(config: conf.ExperimentConfig) -> None:
     best_model_path = checkpoint_cb.best_model_path
     logger.info(f"Loading best model for export: {best_model_path}")
     export_to_onnx(config, best_model_path, wandb_logger, nn_model)
-    wandb.finish()
 
     # # Run predictions
     # ckpt_path = "Keystroke-XAI/20251227_0330/checkpoints/mobile-769-1.49.ckpt"
-    # embeddings = run_predictions(trainer, lit_model, dm, ckpt_path)
-    # comparisons = load_comparisons(conf.scenario, logger)
-    # #
-    # distances = compute_distances4comps(embeddings, comparisons, metric="euclidean")
-    # similarities = normalize_distances(distances) # No need for second normalization
-    # #
-    # # save_predictions(similarities, conf.scenario, logger)
-    #
-    # # visualize_activations(nn_model, dm)
+    embeddings = run_predictions(trainer, lit_model, dm, best_model_path)
+    comparisons = load_comparisons(config.scenario, logger)
+    distances = compute_distances4comps(embeddings, comparisons, metric="euclidean")
+    similarities = normalize_distances(distances)
+    save_predictions(similarities, config.scenario, run_dir, logger)
+    # visualize_activations(nn_model, dm)
+
+    wandb.finish()
+
 
 if __name__ == "__main__":
-    config = conf.ExperimentConfig(scenario='desktop')
-    run_experiment(config)
+    wandb_login()
+    initialize_environment(conf.SWEEP_BASE)
+    run_sweep_agent(run_experiment)
