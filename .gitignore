@@ -1,6 +1,9 @@
 wandb/
 outputs/
 .claude/
+*.zip
+*.txt
+*.ipynb
 .idea/
 .vscode/
 data/Aalto/raw/
