@@ -8,6 +8,10 @@ warnings.filterwarnings("ignore", message=".*dtype.*align.*", module="numpy")
 warnings.filterwarnings("ignore", message=".*wandb run already in progress.*")
 warnings.filterwarnings("ignore", message=".*bf16-mixed is not supported by the model summary.*")
 
+import logging
+logging.getLogger("torch._inductor.autotune_process").setLevel(logging.ERROR)
+logging.getLogger("torch._inductor").setLevel(logging.ERROR)
+
 # 2. Third-Party Libraries
 import numpy as np
 import pytorch_lightning as pl
@@ -50,6 +54,7 @@ def initialize_environment(config: conf.ExperimentConfig) -> None:
     pl.seed_everything(config.seed, workers=True, verbose=False)
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
+        torch.backends.cudnn.benchmark = True
     logger.info(f"Environment initialized | Seed: {config.seed} | Device: {'GPU' if torch.cuda.is_available() else 'CPU'}")
 
 def create_data_module(
@@ -95,7 +100,7 @@ def create_trainer(
         accelerator=accelerator,
         devices=1,
         deterministic=True,
-        log_every_n_steps=100,
+        log_every_n_steps=256, #per epoch
         num_sanity_val_steps=1
     )
 

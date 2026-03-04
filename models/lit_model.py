@@ -17,7 +17,7 @@ class KeystrokeLitModel(pl.LightningModule):
         # miner: Optional[BaseMiner] = None,
     ):
         super().__init__()
-        self.model = torch.compile(model, mode='default')
+        self.model = torch.compile(model, mode='max-autotune-no-cudagraphs')
         self.loss_fn = loss_fn
         # self.miner = miner
 
@@ -98,10 +98,10 @@ class KeystrokeLitModel(pl.LightningModule):
         return [(sid, emb.cpu()) for sid, emb in zip(session_ids, embeddings)]
 
     def on_train_start(self):
-        # Attach model/grad logging in W&B
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.watch(self.model, log="all",
-                                         log_freq=100, log_graph=True)
+                                         log_freq=256, log_graph=True)
+            self.logger.experiment.define_metric("*", step_metric="epoch")
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(

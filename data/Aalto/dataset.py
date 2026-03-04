@@ -156,6 +156,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
             num_workers=self.num_workers_train,
             persistent_workers=self.persistent_workers and self.num_workers_train > 0,
             pin_memory=True,
+            prefetch_factor=4 if self.num_workers_train > 0 else None,
             shuffle=True
         )
 
@@ -166,6 +167,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
             num_workers=self.num_workers_val,
             persistent_workers=self.persistent_workers and self.num_workers_val > 0,
             pin_memory=True,
+            prefetch_factor=4 if self.num_workers_val > 0 else None,
             shuffle=False
         )
 

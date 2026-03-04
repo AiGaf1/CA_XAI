@@ -11,6 +11,7 @@ class TransformerConfig:
     n_periods: int = 16
     use_pos_enc: bool = True
     use_sigmoid: bool = True
+    use_phase_bias: bool = False
 
 
 @dataclass
@@ -64,18 +65,22 @@ class ExperimentConfig:
 
 # Base config — only override what differs from ExperimentConfig defaults.
 SWEEP_BASE = ExperimentConfig(
-    model=TransformerConfig(num_heads=2),
+    model=TransformerConfig(),
 )
 
 # W&B native sweep config — passed to run_sweep_agent() in train.py.
 WANDB_SWEEP_CONFIG = {
     "method": "grid",
-    "metric": {"name": "val/loss", "goal": "minimize"},
+    "metric": {"name": "val/eer", "goal": "minimize"},
     "parameters": {
         # "scenario":          {"values": ["desktop"]},
         # "loss_type":         {"values": ["supcon"]},
-        # "model.num_layers":  {"values": [4]},
-        "model.use_pos_enc": {"values": [True, False]},
-        "model.use_sigmoid": {"values": [True, False]},
+        "model.num_layers":  {"values": [3, 4, 5]},
+        "model.num_heads":   {"values": [1, 2]},
+        "model.ff_dim":      {"values": [256, 512]},
+        # "model.n_periods":   {"values": [8, 16, 32]},
+        "model.use_pos_enc": {"values": [True]},
+        "model.use_sigmoid": {"values": [True]},
+        "model.use_phase_bias": {"values": [False]},
     },
 }

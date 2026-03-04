@@ -11,7 +11,7 @@ logger = setup_logger("sweep")
 
 _ABBREV = {
     "use_pos_enc": "pos", "use_sigmoid": "sig", "num_layers": "L",
-    "loss_type": "loss", "scenario": "sc", "num_heads": "H",
+    "loss_type": "loss", "scenario": "sc", "num_heads": "H", "use_phase_bias": "pb",
 }
 
 

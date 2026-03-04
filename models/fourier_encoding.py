@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import math
 
 class LearnableFourierFeatures(nn.Module):
-    def __init__(self, feature_dict: dict, num_features: int, use_sigmoid: bool = True):
+    def __init__(self, feature_dict: dict, num_features: int, use_sigmoid: bool = True, use_phase_bias: bool = False):
         """
         feature_dict: dict where key=feature_name, value={"min": float, "max": float}
         num_features: number of Fourier frequencies per feature
@@ -31,6 +31,9 @@ class LearnableFourierFeatures(nn.Module):
         self.scales_raw = nn.Parameter(
             torch.zeros(self.input_dim, self.num_features)  # (M, D)
         )
+        self.use_phase_bias = use_phase_bias
+        if use_phase_bias:
+            self.phase_bias = nn.Parameter(torch.zeros(self.input_dim, self.num_features))
 
         self.d_out = 2 * self.input_dim * num_features
 
@@ -43,6 +46,8 @@ class LearnableFourierFeatures(nn.Module):
         x = x.unsqueeze(-1)                     # (B, L, M, 1)
         scales = torch.sigmoid(self.scales_raw) if self.use_sigmoid else self.scales_raw
         proj = x * self.freq * scales          # (B, L, M, D)
+        if self.use_phase_bias:
+            proj = proj + self.phase_bias
         fourier = torch.stack(
             [proj.sin(), proj.cos()],
             dim=-1                              # (B, L, M, D, 2)

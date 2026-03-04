@@ -21,6 +21,7 @@ def build_model(config: conf.ExperimentConfig, periods_dict) -> nn.Module:
             n_periods=cfg.n_periods,
             use_pos_enc=cfg.use_pos_enc,
             use_sigmoid=cfg.use_sigmoid,
+            use_phase_bias=cfg.use_phase_bias,
         )
     elif config.model_type == "cnn":
         cfg: conf.CNNConfig = config.model
