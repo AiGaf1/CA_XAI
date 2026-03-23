@@ -4,18 +4,24 @@ from typing import Union
 
 @dataclass
 class TransformerConfig:
-    num_layers: int = 4
-    num_heads: int = 1
-    ff_dim: int = 512
+    num_layers: int = 5
+    num_heads: int = 2
+    ff_dim: int = 256
     dropout: float = 0.1
     n_periods: int = 16
     use_pos_enc: bool = True
-    use_sigmoid: bool = True
-    use_phase_bias: bool = False
 
 
 @dataclass
 class CNNConfig:
+    n_periods: int = 16
+    hidden_size: int = 100
+
+
+@dataclass
+class LSTMConfig:
+    num_layers: int = 2
+    dropout: float = 0.1
     n_periods: int = 16
 
 
@@ -30,37 +36,52 @@ class ExperimentConfig:
     train_split: float = 0.80
 
     # Model
-    model_type: str = "transformer"  # "transformer" | "cnn"
-    model: Union[TransformerConfig, CNNConfig] = field(default_factory=TransformerConfig)
+    model_type: str = "transformer"  # "transformer" | "cnn" | "lstm"
+    model: Union[TransformerConfig, CNNConfig, LSTMConfig] = field(default_factory=TransformerConfig)
     hidden_size: int = 128
-    output_size: int = 512
-    use_projector: bool = False
+    output_size: int = 256
+    use_projector: bool = True
+    use_mste: bool = True
 
     # Loss
     loss_type: str = "supcon"  # "supcon" | "arcface" | "triplet"
+    loss_temperature: float = 0.1
     arcface_num_classes: int = 100
 
     # Training
     epochs: int = 1000
     lr: float = 1e-3
+    l1_lambda: float = 0
     t_0: int = 2500
     batches_per_epoch_train: int = 256
-    batches_per_epoch_val: int = 16
+    batches_per_epoch_val: int = 64
     samples_per_batch_train: int = 512
     samples_per_batch_val: int = 512
 
+    # Preprocessing
+    clip_percentile_lo: float = 0.01   # lower percentile for timing feature clipping
+    clip_percentile_hi: float = 99.99   # upper percentile for timing feature clipping
+
     # Data path
-    scenario: str = 'desktop'
+    scenario: str = 'desktop'  # 'desktop' | 'mobile' | 'cmu'
     file_path: str = ''
     predict_file_path: str = ''
+    precomputed_features: bool = False  # True for CMU (features already extracted)
 
     seed: int = 42
 
+    _CMU_PATH = 'data/CMU/raw/cmu_dev_set.npy'
+
     def __post_init__(self):
         if not self.file_path:
-            self.file_path = f'data/Aalto/raw/{self.scenario}/{self.scenario}_dev_set.npy'
+            if self.scenario == 'cmu':
+                self.file_path = self._CMU_PATH
+                self.precomputed_features = True
+            else:
+                self.file_path = f'data/Aalto/raw/{self.scenario}/{self.scenario}_dev_set.npy'
         if not self.predict_file_path:
-            self.predict_file_path = f'data/Aalto/raw/{self.scenario}/{self.scenario}_test_sessions.npy'
+            if self.scenario != 'cmu':
+                self.predict_file_path = f'data/Aalto/raw/{self.scenario}/{self.scenario}_test_sessions.npy'
 
 
 # Base config — only override what differs from ExperimentConfig defaults.
@@ -73,14 +94,10 @@ WANDB_SWEEP_CONFIG = {
     "method": "grid",
     "metric": {"name": "val/eer", "goal": "minimize"},
     "parameters": {
-        # "scenario":          {"values": ["desktop"]},
-        # "loss_type":         {"values": ["supcon"]},
-        "model.num_layers":  {"values": [3, 4, 5]},
-        "model.num_heads":   {"values": [1, 2]},
-        "model.ff_dim":      {"values": [256, 512]},
-        # "model.n_periods":   {"values": [8, 16, 32]},
-        "model.use_pos_enc": {"values": [True]},
-        "model.use_sigmoid": {"values": [True]},
-        "model.use_phase_bias": {"values": [False]},
+        "model_type":       {"values": ["lstm"]}, #, "cnn", "lstm"
+        "loss_temperature": {"values": [0.07]},
+        "use_mste":         {"values": [True]},
+        "model.n_periods":  {"values": [64, 32, 16, 8, 4, 2]},
+        "scenario":         {"values": ["mobile", "desktop"]}, #"desktop"
     },
 }

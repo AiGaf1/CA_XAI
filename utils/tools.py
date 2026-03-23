@@ -49,7 +49,7 @@ def setup_wandb_logging(
         f"model_{model_name}"
     ]
 
-    version = run_id if run_id else datetime.now().strftime("%Y%m%d_%H%M")
+    version = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_name = f'{config.epochs}_{config.scenario}'
 
     # save_dir is the parent of where WandbLogger writes {project}/{version}/
@@ -159,6 +159,11 @@ def export_to_onnx(config: ExperimentConfig,ckpt_path: str, wandb_logger: WandbL
     os.makedirs(onnx_dir, exist_ok=True)  # Create 'onnx' folder if it doesn't exist
     onnx_path = os.path.join(onnx_dir, f"model_{rounded_score}.onnx")
 
+    # nn.LSTM uses data-pointer access that breaks the dynamo exporter (FakeTensor),
+    # so force the legacy TorchScript exporter for LSTM models only.
+    from models.lstm import KeystrokeLSTM
+    use_torchscript_exporter = isinstance(export_model, KeystrokeLSTM)
+
     with torch.no_grad():
         torch.onnx.export(
             export_model,
@@ -174,6 +179,7 @@ def export_to_onnx(config: ExperimentConfig,ckpt_path: str, wandb_logger: WandbL
                 'mask': {0: 'batch_size'},
                 'embedding': {0: 'batch_size'}
             },
+            dynamo=not use_torchscript_exporter,
         )
 
     # Extract run_id from a path (assuming structure like "Keystroke-XAI/20251227_0330/checkpoints/...")

@@ -10,15 +10,26 @@ from utils.tools import setup_logger
 logger = setup_logger("sweep")
 
 _ABBREV = {
-    "use_pos_enc": "pos", "use_sigmoid": "sig", "num_layers": "L",
-    "loss_type": "loss", "scenario": "sc", "num_heads": "H", "use_phase_bias": "pb",
+    "use_pos_enc": "pos", "num_layers": "L",
+    "loss_type": "loss", "loss_temperature": "τ", "scenario": "sc", "num_heads": "H",
+    "n_periods": "N",
 }
 
 
+_MODEL_CFG_CLS = {
+    "transformer": conf.TransformerConfig,
+    "cnn":         conf.CNNConfig,
+    "lstm":        conf.LSTMConfig,
+}
+
 def _cfg_from_wandb(wc: dict) -> conf.ExperimentConfig:
+    import dataclasses
     model_overrides = {k.split("model.", 1)[1]: v for k, v in wc.items() if k.startswith("model.")}
     top_overrides   = {k: v for k, v in wc.items() if not k.startswith("model.")}
-    model_cfg = replace(conf.SWEEP_BASE.model, **model_overrides)
+    model_type = top_overrides.get("model_type", conf.SWEEP_BASE.model_type)
+    model_cls  = _MODEL_CFG_CLS[model_type]
+    valid_fields = {f.name for f in dataclasses.fields(model_cls)}
+    model_cfg = model_cls(**{k: v for k, v in model_overrides.items() if k in valid_fields})
     return replace(conf.SWEEP_BASE, model=model_cfg, file_path="", predict_file_path="", **top_overrides)
 
 
@@ -43,7 +54,7 @@ def run_sweep_agent(
     def _agent_fn():
         run = wandb.init()
         wc = dict(run.config)
-        run.name = _run_name(wc)
+        run.name = _run_name(wc) + "_" + datetime.now().strftime("%Y%m%d_%H%M")
         run_experiment(_cfg_from_wandb(wc), sweep_run_id=run.id)
 
     wandb.agent(sweep_id, function=_agent_fn)

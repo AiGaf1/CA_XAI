@@ -9,7 +9,7 @@ import config as conf
 def build_loss(config: conf.ExperimentConfig) -> nn.Module:
     """Instantiate the loss function specified by config.loss_type."""
     if config.loss_type == "supcon":
-        return SupConLoss()
+        return SupConLoss(temperature=config.loss_temperature)
     elif config.loss_type == "arcface":
         return ArcFaceLoss(
             num_classes=config.arcface_num_classes,

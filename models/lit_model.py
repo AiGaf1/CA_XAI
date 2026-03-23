@@ -14,6 +14,7 @@ class KeystrokeLitModel(pl.LightningModule):
         loss_fn: Optional[torch.nn.Module],
         t_0: float = 2500,
         lr: float = 1e-3,
+        l1_lambda: float = 0.0,
         # miner: Optional[BaseMiner] = None,
     ):
         super().__init__()
@@ -45,6 +46,12 @@ class KeystrokeLitModel(pl.LightningModule):
         user_idx = torch.cat([u1, u2], dim=0)
 
         loss = self.loss_fn(embeddings, user_idx)
+
+        # if self.hparams.l1_lambda > 0:
+        #     amplitude = self.model._orig_mod.time_encoders.get_amplitude()
+        #     l1 = amplitude.mean()  # mean of sigmoid(a) ∈ (0,1) — L1 pushes toward 0
+        #     self.log(f"{stage}/fourier_l1", l1, on_epoch=True, on_step=False, batch_size=x1.shape[0])
+        #     loss = loss + self.hparams.l1_lambda * l1
 
         self.log(f"{stage}/loss", loss, prog_bar=True, on_epoch=True, on_step=False, batch_size=x1.shape[0])
 

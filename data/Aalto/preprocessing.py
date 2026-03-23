@@ -140,16 +140,18 @@ def compute_init_periods(min_max_quantile: dict, n_periods: int):
         )
     return init_periods
 
-def compute_feature_min_max(dataset):
+def compute_feature_min_max(dataset, precomputed: bool = False,
+                            clip_percentile_lo: float = 0.01,
+                            clip_percentile_hi: float = 99.99):
     """
     dataset: dictionary {user_id: {session_id: np.ndarray}}
-    Returns: dict with (min, max) per feature
+    Returns: dict with (min, max) per feature after percentile clipping.
     """
     all_features = []
 
     for user_sessions in dataset.values():
         for session in user_sessions.values():
-            feats = extract_features_classic(session)
+            feats = session if precomputed else extract_features_classic(session)
             all_features.append(feats)
 
     all_features = np.vstack(all_features)  # shape: (total_keystrokes, num_features)
@@ -157,15 +159,17 @@ def compute_feature_min_max(dataset):
 
     clip_dict = {}
     for i, name in enumerate(feature_names):
-        min_val = float(np.min(all_features[:, i]))
-        max_val = float(np.max(all_features[:, i]))
-
-        if min_val <= 0:
-            min_val = 1e-6
+        col = all_features[:, i]
+        pos_vals = col[col > 0]
+        lo = float(np.percentile(pos_vals, clip_percentile_lo))
+        hi = float(np.percentile(col,      clip_percentile_hi))
+        min_val = max(lo, 1e-6)  # guard against zero/negative after clipping
+        max_val = hi
 
         clip_dict[name] = {"min": min_val, "max": max_val}
 
-        print(f"{name}: min = {min_val:.6f}, max = {max_val:.6f}")
+        print(f"{name}: min = {min_val:.6f}, max = {max_val:.6f}  "
+              f"(clipped [{clip_percentile_lo}, {clip_percentile_hi}]%)")
 
     return clip_dict
 

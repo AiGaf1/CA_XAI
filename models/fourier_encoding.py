@@ -1,61 +1,9 @@
 import torch.nn as nn
 import torch
-import torch.nn.functional as F
+
 import math
 
 class LearnableFourierFeatures(nn.Module):
-    def __init__(self, feature_dict: dict, num_features: int, use_sigmoid: bool = True, use_phase_bias: bool = False):
-        """
-        feature_dict: dict where key=feature_name, value={"min": float, "max": float}
-        num_features: number of Fourier frequencies per feature
-        use_sigmoid: if True, gate scales with sigmoid; if False, use scales directly (unbounded)
-        """
-        super().__init__()
-
-        self.feature_names = list(feature_dict.keys())
-        self.num_features = num_features
-        self.input_dim = len(self.feature_names)
-        self.use_sigmoid = use_sigmoid
-
-        # Initialize a frequency matrix (M x D)
-        period_list = []
-        for feat in self.feature_names:
-            min_f, max_f = feature_dict[feat]["min"], feature_dict[feat]["max"]
-            period = torch.logspace(math.log10(min_f), math.log10(max_f), steps=num_features)
-            period_list.append(period)
-        period_init = torch.stack(period_list, dim=0)  # (M, D)
-
-        freq = 2 * torch.pi / period_init
-        self.register_buffer("freq", freq)
-
-        self.scales_raw = nn.Parameter(
-            torch.zeros(self.input_dim, self.num_features)  # (M, D)
-        )
-        self.use_phase_bias = use_phase_bias
-        if use_phase_bias:
-            self.phase_bias = nn.Parameter(torch.zeros(self.input_dim, self.num_features))
-
-        self.d_out = 2 * self.input_dim * num_features
-
-    def forward(self, x):
-        """
-        x: (B, L, M)
-        return: (B, L, M*2*D)
-        """
-
-        x = x.unsqueeze(-1)                     # (B, L, M, 1)
-        scales = torch.sigmoid(self.scales_raw) if self.use_sigmoid else self.scales_raw
-        proj = x * self.freq * scales          # (B, L, M, D)
-        if self.use_phase_bias:
-            proj = proj + self.phase_bias
-        fourier = torch.stack(
-            [proj.sin(), proj.cos()],
-            dim=-1                              # (B, L, M, D, 2)
-        )
-
-        return fourier.flatten(start_dim=-3)
-
-class FixedFourierFeatures(nn.Module):
     def __init__(self, feature_dict: dict, num_features: int):
         """
         feature_dict: dict where key=feature_name, value={"min": float, "max": float}
@@ -71,14 +19,27 @@ class FixedFourierFeatures(nn.Module):
         period_list = []
         for feat in self.feature_names:
             min_f, max_f = feature_dict[feat]["min"], feature_dict[feat]["max"]
-            period = torch.logspace(math.log10(min_f), math.log10(max_f), steps=num_features)
+            period = torch.logspace(math.log10(min_f), math.log10(max_f)/2, steps=num_features)
             period_list.append(period)
         period_init = torch.stack(period_list, dim=0)  # (M, D)
 
         freq = 2 * torch.pi / period_init
         self.register_buffer("freq", freq)
 
+        init = torch.randn(self.input_dim, self.num_features) * 0.1
+        self.scales_raw = nn.Parameter(init)
+
+        # Amplitude gate: sigmoid(a) ∈ (0,1), init=0 → sigmoid(0)=0.5
+        # L1 on amplitude pushes frequencies toward 0 → sparsity
+        # self.amplitude_raw = nn.Parameter(torch.zeros(self.input_dim, self.num_features))
         self.d_out = 2 * self.input_dim * num_features
+
+    def get_scales(self) -> torch.Tensor:
+        return torch.sigmoid(self.scales_raw)
+
+    # def get_amplitude(self) -> torch.Tensor:
+    #     """Return amplitude gate values: sigmoid(a) ∈ (0,1). Use for L1 sparsity."""
+    #     return torch.sigmoid(self.amplitude_raw)
 
     def forward(self, x):
         """
@@ -87,29 +48,12 @@ class FixedFourierFeatures(nn.Module):
         """
 
         x = x.unsqueeze(-1)                     # (B, L, M, 1)
-        proj = x * self.freq          # (B, L, M, D)
+        scales = self.get_scales()
+        proj = x * self.freq * scales          # (B, L, M, D)
+        # amplitude = self.get_amplitude()       # (M, D)
         fourier = torch.stack(
             [proj.sin(), proj.cos()],
             dim=-1                              # (B, L, M, D, 2)
-        )
+        )      
+
         return fourier.flatten(start_dim=-3)
-
-
-class SpectralConv1d(nn.Module):
-    def __init__(self, in_channels, out_channels, n_freqs):
-        super(SpectralConv1d, self).__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.n_freqs = n_freqs
-
-        self.scale = 1 / (in_channels * out_channels)
-        self.weights = nn.Parameter(self.scale * torch.rand(in_channels, out_channels))
-
-    def forward(self, x):
-        x_ft = torch.fft.rfft(x)
-
-        out_ft = torch.zeros(x.shape[0], self.out_channels, x.size(-1)//2 + 1, device=x.device, dtype=torch.cfloat)
-        out_ft[:, :, :self.n_freqs] = torch.einsum("bix, iox->box", x_ft[:, :, :self.n_freqs], self.weights)
-
-        # x = torch.fft.irfft(out_ft, n=x.size(-1))
-        return out_ft

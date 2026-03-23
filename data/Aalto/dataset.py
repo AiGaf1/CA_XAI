@@ -31,7 +31,11 @@ class KeystrokeDataModule(pl.LightningDataModule):
         train_val_division: float = 0.8,
         seed: int = 42,
         min_session_length: int = 5,
-        min_sessions_per_user: int = 2
+        min_sessions_per_user: int = 2,
+        precomputed_features: bool = False,
+        clip_percentile_lo: float = 0.05,
+        clip_percentile_hi: float = 99.9,
+        use_mste: bool = True,
     ):
         super().__init__()
         self.raw_data = raw_data
@@ -46,6 +50,9 @@ class KeystrokeDataModule(pl.LightningDataModule):
         self.persistent_workers = persistent_workers
         self.train_val_division = train_val_division
         self.seed = seed
+        self.clip_percentile_lo = clip_percentile_lo
+        self.clip_percentile_hi = clip_percentile_hi
+        self.use_mste = use_mste
 
         self._train_users = None
         self._val_users = None
@@ -58,6 +65,7 @@ class KeystrokeDataModule(pl.LightningDataModule):
         self.ds_predict = None
         self.min_session_length = min_session_length
         self.min_sessions_per_user = min_sessions_per_user
+        self.precomputed_features = precomputed_features
 
     @staticmethod
     def _filter_data(
@@ -121,18 +129,30 @@ class KeystrokeDataModule(pl.LightningDataModule):
             # self.test_data = {u: data[u] for u in self._test_users}
 
             # self.val_shared_pairs = build_cross_user_sequence_pairs(self.val_data)
-            self.min_max = compute_feature_min_max(self.train_data)
+            self.min_max = compute_feature_min_max(
+                self.train_data,
+                precomputed=self.precomputed_features,
+                clip_percentile_lo=self.clip_percentile_lo,
+                clip_percentile_hi=self.clip_percentile_hi,
+            )
+
+            clip_min_max = self.min_max if not self.use_mste else None
 
             self.ds_train = PrepareData(
                 self.train_data,
                 window_size=self.sequence_length,
                 samples_considered_per_epoch=self.batches_per_epoch_train * self.samples_per_batch_train,
+                precomputed_features=self.precomputed_features,
+                min_max=clip_min_max,
             )
 
             self.ds_val = PrepareData(
                 self.val_data,
                 window_size=self.sequence_length,
                 samples_considered_per_epoch=self.batches_per_epoch_val * self.samples_per_batch_val,
+                precomputed_features=self.precomputed_features,
+                deterministic=True,
+                min_max=clip_min_max,
             )
             # self.ds_val_same_seq = SameSequenceContrastiveData(
             #     self.val_data,
@@ -199,15 +219,20 @@ class KeystrokeDataModule(pl.LightningDataModule):
 
 
 class PrepareData:
-    def __init__(self, dataset, window_size, samples_considered_per_epoch):
+    def __init__(self, dataset, window_size, samples_considered_per_epoch, precomputed_features: bool = False, deterministic: bool = False, min_max: dict = None):
         self.len = samples_considered_per_epoch
+        self.deterministic = deterministic
 
         # Pre-compute features and fixed-length padded tensors once at startup
         self.data: dict[Any, dict[Any, tuple[torch.Tensor, torch.Tensor]]] = {}
         for user, sessions in dataset.items():
             self.data[user] = {}
             for sid, sess in sessions.items():
-                feat = extract_features_classic(sess)
+                feat = sess if precomputed_features else extract_features_classic(sess)
+                if min_max is not None:
+                    feat = feat.copy()
+                    feat[:, 0] = np.clip(feat[:, 0], min_max['hold']['min'],   min_max['hold']['max'])
+                    feat[:, 1] = np.clip(feat[:, 1], min_max['flight']['min'], min_max['flight']['max'])
                 fixed, mask = get_session_fixed_length_zero_pad_with_mask(feat, window_size)
                 self.data[user][sid] = (torch.from_numpy(fixed).float(), torch.from_numpy(mask))
 
@@ -222,20 +247,21 @@ class PrepareData:
     def __len__(self) -> int:
         return self.len
 
-    def __getitem__(self, _):
-        user_idx_1, user_key_1 = self._random_user()
-        sid_1 = self._random_session(user_key_1)
+    def __getitem__(self, idx):
+        rng = random.Random(idx) if self.deterministic else random
+        user_idx_1, user_key_1 = self._random_user(rng)
+        sid_1 = self._random_session(user_key_1, rng=rng)
         session_1, mask_1 = self.data[user_key_1][sid_1]
 
-        same_user = random.random() < 0.5
+        same_user = rng.random() < 0.5
         label = 0 if same_user else 1
 
         if same_user:
             user_idx_2, user_key_2 = user_idx_1, user_key_1
-            sid_2 = self._random_session(user_key_2, exclude=sid_1)
+            sid_2 = self._random_session(user_key_2, exclude=sid_1, rng=rng)
         else:
-            user_idx_2, user_key_2 = self._random_different_user(user_idx_1)
-            sid_2 = self._random_session(user_key_2)
+            user_idx_2, user_key_2 = self._random_different_user(user_idx_1, rng=rng)
+            sid_2 = self._random_session(user_key_2, rng=rng)
 
         session_2, mask_2 = self.data[user_key_2][sid_2]
 
@@ -251,21 +277,21 @@ class PrepareData:
     # Sampling helpers
     # ------------------------------------------------------------------
 
-    def _random_user(self) -> tuple[int, Any]:
-        idx = random.randrange(len(self.user_keys))
+    def _random_user(self, rng=random) -> tuple[int, Any]:
+        idx = rng.randrange(len(self.user_keys))
         return idx, self.user_keys[idx]
 
-    def _random_different_user(self, exclude_idx: int) -> tuple[int, Any]:
+    def _random_different_user(self, exclude_idx: int, rng=random) -> tuple[int, Any]:
         idx = exclude_idx
         while idx == exclude_idx:
-            idx = random.randrange(len(self.user_keys))
+            idx = rng.randrange(len(self.user_keys))
         return idx, self.user_keys[idx]
 
-    def _random_session(self, user_id, exclude=None) -> Any:
+    def _random_session(self, user_id, exclude=None, rng=random) -> Any:
         sessions = self.session_keys[user_id]
         if exclude is not None:
             sessions = [s for s in sessions if s != exclude]
-        return random.choice(sessions)
+        return rng.choice(sessions)
 
 class PreparePredictData:
     def __init__(self, dataset, sequence_length):

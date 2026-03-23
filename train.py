@@ -69,7 +69,7 @@ def create_data_module(
     dm = KeystrokeDataModule(
         raw_data=raw_data,
         predict_file_path=predict_file_path,
-        window_size=config.window_size, # conf.window_size, min_session_length
+        window_size=config.window_size,
         samples_per_batch_train=config.samples_per_batch_train,
         samples_per_batch_val=config.samples_per_batch_val,
         batches_per_epoch_train=config.batches_per_epoch_train,
@@ -77,7 +77,11 @@ def create_data_module(
         train_val_division=config.train_split,
         seed=config.seed,
         min_session_length=config.min_session_length,
-        min_sessions_per_user=config.min_sessions_per_user
+        min_sessions_per_user=config.min_sessions_per_user,
+        precomputed_features=config.precomputed_features,
+        clip_percentile_lo=config.clip_percentile_lo,
+        clip_percentile_hi=config.clip_percentile_hi,
+        use_mste=config.use_mste,
     )
     dm.setup(None)
     return dm
@@ -136,7 +140,8 @@ def run_experiment(config: conf.ExperimentConfig, sweep_run_id: str = None) -> N
 
     loss_fn = build_loss(config)
     nn_model = build_model(config, dm.min_max)
-    lit_model = KeystrokeLitModel(nn_model, loss_fn, t_0=config.t_0, lr=config.lr)
+    logger.info(f"Model: {nn_model.__class__.__name__} | model_type={config.model_type} | use_mste={config.use_mste}")
+    lit_model = KeystrokeLitModel(nn_model, loss_fn, t_0=config.t_0, lr=config.lr, l1_lambda=config.l1_lambda)
 
     # 3. Training Infrastructure
     wandb_logger, run_dir = setup_wandb_logging(config=config, model_name=nn_model.__class__.__name__, run_id=sweep_run_id)

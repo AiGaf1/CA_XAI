@@ -2,6 +2,7 @@ import torch.nn as nn
 import config as conf
 from models.transformer import KeystrokeTransformer
 from models.cnn import KeystrokeCNN
+from models.lstm import KeystrokeLSTM
 
 
 def build_model(config: conf.ExperimentConfig, periods_dict) -> nn.Module:
@@ -20,20 +21,32 @@ def build_model(config: conf.ExperimentConfig, periods_dict) -> nn.Module:
             dropout=cfg.dropout,
             n_periods=cfg.n_periods,
             use_pos_enc=cfg.use_pos_enc,
-            use_sigmoid=cfg.use_sigmoid,
-            use_phase_bias=cfg.use_phase_bias,
+            use_mste=config.use_mste,
         )
     elif config.model_type == "cnn":
         cfg: conf.CNNConfig = config.model
         return KeystrokeCNN(
             periods_dict=periods_dict,
-            hidden_size=config.hidden_size,
+            hidden_size=cfg.hidden_size,
             output_size=config.output_size,
             sequence_length=config.window_size,
             use_projector=config.use_projector,
             n_periods=cfg.n_periods,
+            use_mste=config.use_mste,
+        )
+    elif config.model_type == "lstm":
+        cfg: conf.LSTMConfig = config.model
+        return KeystrokeLSTM(
+            periods_dict=periods_dict,
+            hidden_size=config.hidden_size,
+            output_size=config.output_size,
+            use_projector=config.use_projector,
+            n_periods=cfg.n_periods,
+            use_mste=config.use_mste,
+            num_layers=cfg.num_layers,
+            dropout=cfg.dropout,
         )
     else:
         raise ValueError(
-            f"Unknown model_type: '{config.model_type}'. Expected 'transformer' or 'cnn'."
+            f"Unknown model_type: '{config.model_type}'. Expected 'transformer', 'cnn', or 'lstm'."
         )
