@@ -34,13 +34,9 @@ def _cfg_from_wandb(wc: dict) -> conf.ExperimentConfig:
 
 
 def _run_name(wc: dict) -> str:
-    base = conf.SWEEP_BASE
-    diffs = {
-        k.split(".")[-1]: v for k, v in wc.items()
-        if v != getattr(getattr(base, "model", base), k.split(".")[-1], getattr(base, k, None))
-    }
-    parts = [f"{_ABBREV.get(k, k)}={int(v) if isinstance(v, bool) else v}" for k, v in diffs.items()]
-    return "_".join(parts) or "baseline"
+    parts = [f"{_ABBREV.get(k.split('.')[-1], k.split('.')[-1])}={int(v) if isinstance(v, bool) else v}"
+             for k, v in wc.items()]
+    return "_".join(parts)
 
 
 def run_sweep_agent(

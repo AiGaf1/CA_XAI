@@ -19,7 +19,7 @@ class LearnableFourierFeatures(nn.Module):
         period_list = []
         for feat in self.feature_names:
             min_f, max_f = feature_dict[feat]["min"], feature_dict[feat]["max"]
-            period = torch.logspace(math.log10(min_f), math.log10(max_f)/2, steps=num_features)
+            period = torch.logspace(math.log10(min_f), math.log10(max_f), steps=num_features)
             period_list.append(period)
         period_init = torch.stack(period_list, dim=0)  # (M, D)
 

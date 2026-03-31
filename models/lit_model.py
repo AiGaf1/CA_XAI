@@ -19,6 +19,7 @@ class KeystrokeLitModel(pl.LightningModule):
     ):
         super().__init__()
         self.model = torch.compile(model, mode='max-autotune-no-cudagraphs')
+        self.model = model
         self.loss_fn = loss_fn
         # self.miner = miner
 
@@ -105,17 +106,24 @@ class KeystrokeLitModel(pl.LightningModule):
         return [(sid, emb.cpu()) for sid, emb in zip(session_ids, embeddings)]
 
     def on_train_start(self):
+        arcface_params = list(self.loss_fn.parameters()) if isinstance(self.loss_fn, torch.nn.Module) else []
+        print(f"ArcFace learnable params: {sum(p.numel() for p in arcface_params)}")
         if isinstance(self.logger, WandbLogger):
             self.logger.experiment.watch(self.model, log="all",
                                          log_freq=256, log_graph=True)
             self.logger.experiment.define_metric("*", step_metric="epoch")
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=self.hparams.lr,
-            betas=(0.95, 0.999)
-        )
+        param_groups = [
+            {"params": self.model.parameters(), "lr": self.hparams.lr},
+        ]
+        if isinstance(self.loss_fn, torch.nn.Module) and list(self.loss_fn.parameters()):
+            param_groups.append({
+                "params": self.loss_fn.parameters(),
+                "lr": self.hparams.lr   # 10x smaller for ArcFace W
+            })
+
+        optimizer = torch.optim.AdamW(param_groups, betas=(0.95, 0.999))
 
         scheduler = CosineAnnealingWarmRestarts(
             optimizer,

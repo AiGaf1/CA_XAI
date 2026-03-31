@@ -7,7 +7,8 @@ import random
 import pytorch_lightning as pl
 
 
-from models.cnn import KeystrokeCNN, norm_embeddings
+from models.cnn import KeystrokeCNN
+from utils.metrics import norm_embeddings
 from utils.tools import compute_init_periods
 from data.Aalto.preprocessing import extract_features_classic, get_session_fixed_length, compute_feature_quantiles
 # from main.data.preprocessing import get_session_fixed_length, augment_session, compute_feature_quantiles,

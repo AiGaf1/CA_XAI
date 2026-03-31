@@ -15,7 +15,7 @@ class TransformerConfig:
 @dataclass
 class CNNConfig:
     n_periods: int = 16
-    hidden_size: int = 100
+    hidden_size: int = 128
 
 
 @dataclass
@@ -23,6 +23,7 @@ class LSTMConfig:
     num_layers: int = 2
     dropout: float = 0.1
     n_periods: int = 16
+    hidden_size: int = 128
 
 
 @dataclass
@@ -40,13 +41,12 @@ class ExperimentConfig:
     model: Union[TransformerConfig, CNNConfig, LSTMConfig] = field(default_factory=TransformerConfig)
     hidden_size: int = 128
     output_size: int = 256
-    use_projector: bool = True
     use_mste: bool = True
 
     # Loss
     loss_type: str = "supcon"  # "supcon" | "arcface" | "triplet"
     loss_temperature: float = 0.1
-    arcface_num_classes: int = 100
+    arcface_num_classes: int = None
 
     # Training
     epochs: int = 1000
@@ -94,10 +94,11 @@ WANDB_SWEEP_CONFIG = {
     "method": "grid",
     "metric": {"name": "val/eer", "goal": "minimize"},
     "parameters": {
-        "model_type":       {"values": ["lstm"]}, #, "cnn", "lstm"
+        "loss_type":        {"values": ["supcon"]}, #, "arcface", "triplet"
+        "model_type":       {"values": ["lstm"]}, #, 
         "loss_temperature": {"values": [0.07]},
         "use_mste":         {"values": [True]},
-        "model.n_periods":  {"values": [64, 32, 16, 8, 4, 2]},
+        "model.n_periods":  {"values": [128]},
         "scenario":         {"values": ["mobile", "desktop"]}, #"desktop"
     },
 }

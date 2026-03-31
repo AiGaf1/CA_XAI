@@ -1,15 +1,14 @@
 import torch
 import torch.nn as nn
 from models.fourier_encoding import LearnableFourierFeatures
-from models.cnn import norm_embeddings
+from utils.metrics import norm_embeddings
 
 
 class KeystrokeLSTM(nn.Module):
-    def __init__(self, periods_dict, output_size=512, hidden_size=128,
-                 vocab_size=256, key_emb_dim=16, use_projector=False,
+    def __init__(self, periods_dict, output_size=256, hidden_size=128,
+                 vocab_size=256, key_emb_dim=16,
                  n_periods=16, use_mste=True, num_layers=2, dropout=0.1):
         super().__init__()
-        self.use_projector = use_projector
         self.use_mste = use_mste
 
         self.key_embedding = nn.Embedding(vocab_size, key_emb_dim)
@@ -32,21 +31,18 @@ class KeystrokeLSTM(nn.Module):
 
         lstm_out_dim = hidden_size * 2  # bidirectional
 
-        if use_projector:
-            self.projector = nn.Sequential(
-                nn.Dropout(p=0.1),
-                nn.Linear(lstm_out_dim, output_size, bias=False),
-            )
-        self.embedding_dim = output_size if use_projector else lstm_out_dim
+        self.projector = nn.Sequential(
+            nn.Dropout(p=0.1),
+            nn.Linear(lstm_out_dim, output_size, bias=False),
+        )
+        self.embedding_dim = output_size
 
     def forward(self, x, mask):
         x, mask = x.float(), mask.float()
-        hold, flight, keys = x.unbind(dim=-1)
-        keys = keys.long()
-
-        time_vec  = torch.stack([hold, flight], dim=-1)                          # (B, L, 2)
-        time_feat = self.time_encoders(time_vec) if self.use_mste else time_vec  # (B, L, 2D) or (B, L, 2)
-        key_feat  = self.key_embedding(keys)                                     # (B, L, K)
+        keys = x[..., 2].long()
+        time_vec = x[..., :2]
+        time_feat = self.time_encoders(time_vec) if self.use_mste else time_vec
+        key_feat = self.key_embedding(keys)
 
         encoded_x = torch.cat([time_feat, key_feat], dim=-1)  # (B, L, C)
         encoded_x = self.input_norm(encoded_x)
@@ -56,11 +52,8 @@ class KeystrokeLSTM(nn.Module):
         # Masked mean pooling
         valid = mask.unsqueeze(-1)
         embedding = (out * valid).sum(dim=1) / (valid.sum(dim=1) + 1e-8)
-
-        if self.use_projector:
-            embedding = self.projector(embedding)
-
-        return norm_embeddings(embedding)
+        projector = self.projector(embedding)
+        return norm_embeddings(projector)
 
     def get_embedding_dim(self) -> int:
         return self.embedding_dim

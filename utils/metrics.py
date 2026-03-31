@@ -1,6 +1,10 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
-from models.cnn import norm_embeddings
+
+
+def norm_embeddings(embeddings: torch.Tensor) -> torch.Tensor:
+    return F.normalize(embeddings, dim=-1, p=2)
 
 
 def compute_distances4comps(embeddings, comps, metric="euclidean"):

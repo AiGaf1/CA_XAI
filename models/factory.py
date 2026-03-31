@@ -14,7 +14,6 @@ def build_model(config: conf.ExperimentConfig, periods_dict) -> nn.Module:
             hidden_size=config.hidden_size,
             output_size=config.output_size,
             window_size=config.window_size,
-            use_projector=config.use_projector,
             num_layers=cfg.num_layers,
             num_heads=cfg.num_heads,
             ff_dim=cfg.ff_dim,
@@ -29,8 +28,6 @@ def build_model(config: conf.ExperimentConfig, periods_dict) -> nn.Module:
             periods_dict=periods_dict,
             hidden_size=cfg.hidden_size,
             output_size=config.output_size,
-            sequence_length=config.window_size,
-            use_projector=config.use_projector,
             n_periods=cfg.n_periods,
             use_mste=config.use_mste,
         )
@@ -38,9 +35,8 @@ def build_model(config: conf.ExperimentConfig, periods_dict) -> nn.Module:
         cfg: conf.LSTMConfig = config.model
         return KeystrokeLSTM(
             periods_dict=periods_dict,
-            hidden_size=config.hidden_size,
+            hidden_size=cfg.hidden_size,
             output_size=config.output_size,
-            use_projector=config.use_projector,
             n_periods=cfg.n_periods,
             use_mste=config.use_mste,
             num_layers=cfg.num_layers,

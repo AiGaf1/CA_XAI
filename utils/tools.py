@@ -45,7 +45,6 @@ def setup_wandb_logging(
         f"window_size_{config.window_size}",
         f"epochs_{config.epochs}",
         f"trigperiods_{config.model.n_periods}",
-        f"head_{config.use_projector}",
         f"model_{model_name}"
     ]
 
@@ -109,13 +108,12 @@ def save_predictions(similarities: list[float], scenario: str, run_dir: str, log
 def export_to_onnx(config: ExperimentConfig,ckpt_path: str, wandb_logger: WandbLogger, model):
     import torch.serialization
     from pytorch_metric_learning.distances.cosine_similarity import CosineSimilarity
-    from pytorch_metric_learning.reducers.avg_non_zero_reducer import AvgNonZeroReducer
     from pytorch_metric_learning.reducers.mean_reducer import MeanReducer
 
     # Allow the custom classes needed for weights_only=True loading
     torch.serialization.add_safe_globals([
         CosineSimilarity, SupConLoss, ArcFaceLoss, TripletMarginLoss,
-        AvgNonZeroReducer, MeanReducer, getattr,
+        MeanReducer, getattr,
     ])
 
     # After creating your model

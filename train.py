@@ -18,6 +18,7 @@ import pytorch_lightning as pl
 import wandb
 from dotenv import load_dotenv
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import ModelSummary
 from torch import nn
 import torch
 # 3. Local Modules (Project Specific)
@@ -105,7 +106,8 @@ def create_trainer(
         devices=1,
         deterministic=True,
         log_every_n_steps=256, #per epoch
-        num_sanity_val_steps=1
+        num_sanity_val_steps=1,
+        enable_model_summary=True,
     )
 
 def run_predictions(
@@ -138,6 +140,10 @@ def run_experiment(config: conf.ExperimentConfig, sweep_run_id: str = None) -> N
     # 1. Data & Model Setup
     dm = create_data_module(config.file_path, config.predict_file_path, config)
 
+    if config.loss_type == "arcface":
+        config.arcface_num_classes = dm.num_train_users
+        logger.info(f"ArcFace num_classes set to train users: {config.arcface_num_classes}")
+
     loss_fn = build_loss(config)
     nn_model = build_model(config, dm.min_max)
     logger.info(f"Model: {nn_model.__class__.__name__} | model_type={config.model_type} | use_mste={config.use_mste}")
@@ -146,6 +152,7 @@ def run_experiment(config: conf.ExperimentConfig, sweep_run_id: str = None) -> N
     # 3. Training Infrastructure
     wandb_logger, run_dir = setup_wandb_logging(config=config, model_name=nn_model.__class__.__name__, run_id=sweep_run_id)
     callbacks = create_callbacks(config.scenario, run_dir)
+    callbacks.append(ModelSummary(max_depth=4))
     trainer = create_trainer(config.epochs, wandb_logger, callbacks)
 
     # 4. Execution
